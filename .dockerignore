@@ -1,0 +1,12 @@
+.venv
+venv
+__pycache__
+*.pyc
+.git
+.gitignore
+.streamlit/secrets.toml
+*.geojson
+.pytest_cache
+.mypy_cache
+README.md
+ROADMAP.md

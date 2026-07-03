@@ -25,6 +25,9 @@ import uuid
 import logging
 from pathlib import Path
 
+import auth
+import db
+
 # Configuração de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -58,86 +61,55 @@ def validate_file_upload(uploaded_file):
     
     return True, "Arquivo válido"
 
-def initialize_ee():
+def initialize_ee(credentials: dict) -> bool:
     """
-    Inicializa o Google Earth Engine usando credenciais de conta de serviço
-    armazenadas nos segredos do Streamlit.
+    Inicializa o Google Earth Engine usando a credencial de conta de serviço
+    do usuário logado (armazenada de forma criptografada no banco local).
     """
     try:
-        # Testa se já está inicializado
-        ee.Number(1).getInfo()
-        logger.info("Earth Engine já inicializado")
+        service_account = credentials.get('client_email')
+        ee_credentials = ee.ServiceAccountCredentials(
+            service_account,
+            key_data=json.dumps(credentials)
+        )
+        ee.Initialize(
+            credentials=ee_credentials,
+            opt_url='https://earthengine-highvolume.googleapis.com'
+        )
+        logger.info("Earth Engine inicializado com sucesso")
+        st.sidebar.success("✅ Earth Engine conectado!")
         return True
-        
-    except ee.EEException:
-        # Não inicializado, procede com a inicialização
-        try:
-            # Verifica se as credenciais estão nos segredos do Streamlit
-            if "gee_service_account_credentials" in st.secrets:
-                # Obtém a string JSON das credenciais
-                json_data = st.secrets["gee_service_account_credentials"]
-                
-                # Parse do JSON
-                try:
-                    json_object = json.loads(json_data, strict=False)
-                except json.JSONDecodeError as json_err:
-                    logger.error(f"Erro JSON: {json_err}")
-                    st.error("❌ Credenciais JSON inválidas")
-                    st.stop()
-                    return False
-                
-                # Valida campos obrigatórios
-                required_fields = ['client_email', 'private_key', 'project_id']
-                missing_fields = [field for field in required_fields if not json_object.get(field)]
-                if missing_fields:
-                    logger.error(f"Campos obrigatórios ausentes: {missing_fields}")
-                    st.error(f"❌ Campos obrigatórios ausentes nas credenciais: {missing_fields}")
-                    st.stop()
-                    return False
-                
-                # Extrai o email da conta de serviço
-                service_account = json_object.get('client_email')
-                
-                # Converte de volta para string JSON (conforme tutorial)
-                json_object_str = json.dumps(json_object)
-                
-                # Cria as credenciais
-                credentials = ee.ServiceAccountCredentials(
-                    service_account, 
-                    key_data=json_object_str
-                )
-                
-                # Inicializa o Earth Engine
-                ee.Initialize(
-                    credentials=credentials,
-                    opt_url='https://earthengine-highvolume.googleapis.com'
-                )
-                
-                logger.info("Earth Engine inicializado com sucesso")
-                st.sidebar.success("✅ Earth Engine conectado!")
-                return True
-                
-            else:
-                # Fallback para desenvolvimento local
-                logger.warning("Credenciais GEE não encontradas, tentando inicialização local")
-                st.warning("⚠️ Modo desenvolvimento local")
-                ee.Initialize(opt_url='https://earthengine-highvolume.googleapis.com')
-                st.sidebar.info("🏠 Earth Engine (local)")
-                return True
-                
-        except Exception as ex:
-            logger.error(f"Falha ao inicializar Earth Engine: {ex}")
-            st.error("❌ Falha na inicialização do Earth Engine")
-            with st.expander("🔍 Detalhes do erro"):
-                st.error(f"Erro: {str(ex)}")
-                st.markdown("""
-                **Possíveis soluções:**
-                1. Verifique as credenciais no Streamlit Cloud
-                2. Confirme permissões da conta de serviço no GCP
-                3. Verifique se Earth Engine API está habilitado
-                """)
-            st.stop()
-            return False
+
+    except Exception as ex:
+        logger.error(f"Falha ao inicializar Earth Engine: {ex}")
+        st.error("❌ Falha na inicialização do Earth Engine")
+        with st.expander("🔍 Detalhes do erro"):
+            st.error(f"Erro: {str(ex)}")
+            st.markdown("""
+            **Possíveis soluções:**
+            1. Confirme que o JSON da conta de serviço está correto
+            2. Confirme permissões da conta de serviço no GCP
+            3. Verifique se a Earth Engine API está habilitada no projeto
+            """)
+        return False
+
+
+def save_gee_credentials_from_json(user_email: str, json_input: str) -> bool:
+    """Valida e salva a credencial de conta de serviço do usuário. Retorna True se salvou."""
+    try:
+        parsed = json.loads(json_input, strict=False)
+    except json.JSONDecodeError as json_err:
+        st.error(f"❌ Credenciais JSON inválidas: {json_err}")
+        return False
+
+    required_fields = ['client_email', 'private_key', 'project_id']
+    missing_fields = [field for field in required_fields if not parsed.get(field)]
+    if missing_fields:
+        st.error(f"❌ Campos obrigatórios ausentes nas credenciais: {missing_fields}")
+        return False
+
+    db.save_credentials(user_email, parsed)
+    return True
 
 @st.cache_data
 def uploaded_file_to_gdf(data):
@@ -234,8 +206,39 @@ def uploaded_file_to_gdf(data):
         logger.error(f"Erro ao processar arquivo: {e}")
         raise
 
-# Inicializa o Earth Engine ANTES de qualquer outra operação
-if not initialize_ee():
+# Login e credenciais do usuário ANTES de qualquer outra operação
+db.init_db()
+
+if not auth.is_logged_in():
+    auth.render_landing_page()
+    st.stop()
+
+auth.render_user_badge()
+
+user_email = st.user.email
+credentials = db.get_credentials(user_email)
+
+if credentials is None:
+    st.warning("⚠️ Você ainda não cadastrou suas credenciais do Google Earth Engine.")
+    with st.form("gee_credentials_form"):
+        st.markdown("Cole abaixo o JSON da sua conta de serviço do Google Earth Engine:")
+        json_input = st.text_area("Credencial (JSON)", height=200)
+        submitted = st.form_submit_button("Salvar credenciais")
+    if submitted and save_gee_credentials_from_json(user_email, json_input):
+        st.success("✅ Credenciais salvas!")
+        st.rerun()
+    st.stop()
+
+with st.expander("🔑 Atualizar credenciais do Earth Engine"):
+    with st.form("gee_credentials_update_form"):
+        st.markdown("Cole o novo JSON da sua conta de serviço para substituir a credencial atual:")
+        new_json_input = st.text_area("Nova credencial (JSON)", height=200, key="update_creds_input")
+        update_submitted = st.form_submit_button("Atualizar")
+    if update_submitted and save_gee_credentials_from_json(user_email, new_json_input):
+        st.success("✅ Credenciais atualizadas!")
+        st.rerun()
+
+if not initialize_ee(credentials):
     st.stop()
 
 # Header principal
