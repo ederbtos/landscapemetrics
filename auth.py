@@ -1,10 +1,48 @@
-"""Landing page e controles de login/logout com Google (via st.login nativo do Streamlit)."""
+"""
+Descrição da funcionalidade
+---------------------------
+Camada de apresentação e controle de acesso do app: landing page pública e
+gate de login antes de liberar qualquer funcionalidade de análise. Resolve o
+problema de negócio de identificar o usuário para associá-lo às suas próprias
+credenciais do Earth Engine (ver db.py) — sem isso, a Fase 3 do roadmap
+(credenciais por usuário) não teria uma chave de identidade estável.
+
+Contexto técnico
+-----------------
+Usa `st.login`/`st.user`/`st.logout`, a API nativa de auth do Streamlit
+(OAuth/OIDC), configurada via seção `[auth]` de `.streamlit/secrets.toml`
+(client_id/secret, redirect_uri, cookie_secret). app.py chama
+`is_logged_in()` antes de renderizar qualquer conteúdo (gate) e
+`render_user_badge()` depois do login.
+
+Regras de negócio
+------------------
+- Sem sessão válida, o usuário só pode ver a landing page — nenhum dado de
+  paisagem é acessível.
+- O e-mail do usuário autenticado (`st.user.email`) é a chave primária usada
+  para buscar/salvar credenciais do Earth Engine em db.py.
+
+Pontos de atenção
+------------------
+- `st.user.email` não é validado quanto a verificação de e-mail pelo provedor
+  antes de ser usado como chave em `user_credentials`; depende inteiramente da
+  garantia do OAuth do Google de que o e-mail retornado é verificado.
+- Login mal configurado (`[auth]` ausente) não trava a aplicação com erro —
+  degrada para uma mensagem informativa, decisão intencional para permitir
+  rodar localmente sem OAuth durante desenvolvimento.
+"""
 import streamlit as st
 
 
 def is_logged_in() -> bool:
-    """True se o usuário está logado. False também quando [auth] não está configurado
-    (st.user.is_logged_in lança AttributeError nesse caso, em vez de retornar False)."""
+    """
+    Retorna o estado de autenticação da sessão atual.
+
+    Pontos de atenção: `st.user.is_logged_in` lança `AttributeError` (em vez
+    de retornar False) quando a seção `[auth]` não existe em secrets.toml —
+    esse é o único motivo do try/except aqui, não é tratamento de erro de
+    autenticação em si.
+    """
     try:
         return bool(st.user.is_logged_in)
     except AttributeError:

@@ -1,3 +1,56 @@
+"""
+Descrição da funcionalidade
+---------------------------
+Ponto de entrada do Streamlit e única "página" do app: extrai métricas de
+paisagem (composição e configuração da cobertura do solo) num raio ao redor
+de um ponto de interesse desenhado pelo usuário, usando dados de uso e
+cobertura da terra do MapBiomas via Google Earth Engine. Resolve o problema
+de negócio de dar a pesquisadores/técnicos ambientais uma análise de
+paisagem pronta (área, número de manchas, forma, proximidade etc.) sem
+precisar programar em GEE/PyLandStats.
+
+Contexto técnico
+-----------------
+Script Streamlit executado top-to-bottom a cada interação do usuário (não é
+uma API REST). Depende de: auth.py (login), db.py (credenciais do Earth
+Engine por usuário), Earth Engine (`ee`) para acesso aos rasters do
+MapBiomas, geemap/streamlit-folium para os mapas interativos e PyLandStats
+para o cálculo das métricas de paisagem propriamente ditas.
+
+Regras de negócio
+------------------
+- Um único ponto de interesse por execução; múltiplos pontos no GeoJSON são
+  rejeitados (linha ~382).
+- Buffer configurável entre MIN_BUFFER e MAX_BUFFER metros ao redor do ponto.
+- Upload restrito a `.geojson` até MAX_FILE_SIZE, com sanitização de nome de
+  arquivo (ver validate_file_upload).
+
+Pontos de atenção
+------------------
+- RISCO DE INTEGRIDADE DE DADOS: quando a extração via Earth Engine falha em
+  qualquer estágio (asset indisponível, sampleRectangle, reduceRegion), o
+  fluxo principal substitui os dados reais por arrays codificados
+  ("dados representativos de Santa Catarina") e segue exibindo
+  gráficos/métricas/CSV normalmente, apenas com um `st.warning`/`st.error`
+  acima. Um usuário que não leia a mensagem pode baixar e usar como real uma
+  análise que não tem nenhuma relação com o ponto que selecionou. Ver
+  comentários nos blocos de fallback abaixo.
+- Múltiplos blocos de try/except aninhados com lógica de fallback duplicada
+  tornam o fluxo difícil de auditar e de testar; um refactor extraindo cada
+  etapa (seleção de asset, extração de pixels, cálculo de métricas) em
+  funções puras testáveis reduziria bastante o risco acima.
+- `except:` bare no botão "Status GEE" (linha ~276) engole qualquer exceção,
+  inclusive erros de programação, não só falha de conectividade.
+
+Melhorias sugeridas
+---------------------
+- Nunca substituir dados reais por dados sintéticos de forma transparente ao
+  usuário: falhar explicitamente (ou, no mínimo, bloquear o download do CSV)
+  quando a extração do Earth Engine não tiver sucesso.
+- Extrair a lógica de negócio (seleção de asset MapBiomas, extração de
+  pixels, cálculo de métricas) do corpo do script Streamlit para funções
+  puras, permitindo testes unitários sem precisar renderizar a UI.
+"""
 # Instalacao de bibliotecas necessarias
 import streamlit as st
 
@@ -55,16 +108,24 @@ def validate_file_upload(uploaded_file):
     if file_extension not in ALLOWED_EXTENSIONS:
         return False, f"Extensão não permitida. Permitido: {ALLOWED_EXTENSIONS}"
     
-    # Verifica nome do arquivo (evita caracteres perigosos)
+    # Bloqueia path traversal (".." + separadores) e caracteres inválidos em
+    # nomes de arquivo do Windows; o nome original do upload nunca é usado
+    # como caminho de disco (uploaded_file_to_gdf gera um nome via uuid4),
+    # mas a validação fica como defesa em profundidade caso isso mude.
     if any(char in uploaded_file.name for char in ['..', '/', '\\', '<', '>', '|', '*', '?']):
         return False, "Nome do arquivo contém caracteres não permitidos"
-    
+
     return True, "Arquivo válido"
 
 def initialize_ee(credentials: dict) -> bool:
     """
     Inicializa o Google Earth Engine usando a credencial de conta de serviço
     do usuário logado (armazenada de forma criptografada no banco local).
+
+    Decisão de projeto: usa o endpoint `earthengine-highvolume` em vez do
+    padrão porque o app faz várias chamadas síncronas de leitura de pixels
+    por execução (sampleRectangle/reduceRegion); o endpoint high-volume tem
+    limites de taxa mais adequados para esse padrão de uso interativo.
     """
     try:
         service_account = credentials.get('client_email')
@@ -102,6 +163,12 @@ def save_gee_credentials_from_json(user_email: str, json_input: str) -> bool:
         st.error(f"❌ Credenciais JSON inválidas: {json_err}")
         return False
 
+    # Validação apenas estrutural (campos presentes), não criptográfica: uma
+    # private_key malformada ou uma conta de serviço sem a Earth Engine API
+    # habilitada só será detectada depois, em initialize_ee(). Isso é
+    # intencional para manter esta função sem dependência do SDK do Earth
+    # Engine, mas significa que "salvou com sucesso" não implica "credencial
+    # funcional".
     required_fields = ['client_email', 'private_key', 'project_id']
     missing_fields = [field for field in required_fields if not parsed.get(field)]
     if missing_fields:
@@ -479,8 +546,14 @@ if data:
                 
                 mb = None
                 collection_number = None
-                
-                # Tenta diferentes assets até encontrar um que funcione
+
+                # Lista em ordem de preferência (mais recente primeiro): tenta a
+                # Collection 9 e recua para versões mais antigas se o asset não
+                # existir ou estiver indisponível no momento. Isso decide qual
+                # ano/legenda de classes será usado adiante — collections
+                # diferentes do MapBiomas podem ter esquemas de classificação
+                # distintos, então o `legend_dict` hardcoded mais abaixo é
+                # otimista em assumir que serve para qualquer uma delas.
                 for asset in mapbiomas_assets:
                     try:
                         st.info(f"🔍 Testando {asset.split('/')[-1]}...")
@@ -562,7 +635,12 @@ if data:
                         valid_values = [int(v) for v in values_list if v is not None and v != 0]
                         
                         if len(valid_values) < 9:
-                            # Preenche com classes típicas de SC
+                            # Mesmo aqui: se a região retornou poucos pixels válidos
+                            # (buffer pequeno ou região sem cobertura no asset), o
+                            # array final é COMPLETADO com classes fixas de Santa
+                            # Catarina só para atingir tamanho mínimo de plotagem —
+                            # ou seja, parte dos "dados extraídos" reportados ao
+                            # usuário pode não ser real. Preenche com classes típicas de SC
                             typical_classes = [15, 21, 4, 18, 12]  # Pastagem, Mosaico, Floresta, Agricultura, Campo
                             while len(valid_values) < 9:
                                 valid_values.extend(typical_classes[:9-len(valid_values)])
@@ -582,7 +660,14 @@ if data:
                     except Exception as reduce_error:
                         logger.error(f"Todos os métodos falharam: {reduce_error}")
                         st.warning("⚠️ Usando dados representativos de Santa Catarina")
-                        
+
+                        # ATENÇÃO: a partir daqui os dados NÃO têm nenhuma relação
+                        # com o ponto/buffer selecionado pelo usuário — é uma matriz
+                        # fixa de exemplo. O fluxo segue adiante como se a extração
+                        # tivesse funcionado (métricas calculadas, gráfico exibido,
+                        # CSV liberado para download), com o único aviso sendo este
+                        # st.warning acima. Risco de negócio: o usuário pode baixar
+                        # e usar como real uma análise que é, na prática, um mock.
                         # Dados baseados em estudos reais para SC
                         np_arr_mb = np.array([
                             [15, 15, 21, 15, 4, 4],
@@ -603,7 +688,10 @@ if data:
             except Exception as mb_error:
                 logger.error(f"Erro MapBiomas: {mb_error}")
                 st.error("❌ Erro no MapBiomas - usando dados de demonstração")
-                
+
+                # Mesmo risco do bloco de fallback do reduceRegion acima: dados
+                # fixos, desconectados do ponto real, seguem para o cálculo de
+                # métricas e para o CSV de download como se fossem válidos.
                 # Dados sintéticos de alta qualidade para SC
                 np_arr_mb = np.array([
                     [15, 15, 21, 15, 4, 4, 15],
@@ -680,6 +768,13 @@ if data:
                 classes_index = list(map(int, class_metrics_df.index))
                 
                 # Dicionário de legendas MapBiomas completo
+                # Limitação conhecida: mapeamento fixo por posição de índice,
+                # construído a partir do esquema de classes da Collection
+                # (aprox. 9); classes não usadas nesse esquema ficam como ' '.
+                # Se uma collection mais nova mudar/adicionar códigos de classe
+                # (ver seleção de asset acima), este dicionário precisa ser
+                # atualizado manualmente — não há acoplamento automático entre
+                # a collection selecionada e a legenda usada aqui.
                 legend_keys = [
                     ' ',  # 0
                     'Floresta',  # 1
