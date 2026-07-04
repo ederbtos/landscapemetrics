@@ -1,8 +1,9 @@
 # Roadmap — Landscape Metrics Extractor
 
-## Status atual (2026-07-03)
+## Status atual (2026-07-04)
 
 ### ✅ Concluído
+
 - **Dependências corrigidas**: `requirements.txt` tinha pins incompatíveis com ambientes atuais
   (`pylandstats==3.0.0` não tem wheel para Windows/Python 3.13; `geemap==0.30.0` quebra com
   `setuptools>=81` e `ipython>=9`). Ajustado para `pylandstats==3.1.0`, `setuptools<81`, `ipython<9`.
@@ -12,37 +13,32 @@
   como volume somente-leitura (as credenciais nunca vão para dentro da imagem).
 - **`.streamlit/secrets.toml.example`**: modelo do arquivo de credenciais de conta de serviço do
   Google Earth Engine.
+- **Fase 1 — Landing page** ([auth.py](auth.py)): tela inicial explicando o app antes do login,
+  como primeira renderização do próprio `app.py` (sem app multi-página) quando o usuário ainda
+  não está autenticado.
+- **Fase 2 — Login** ([auth.py](auth.py)): autenticação via `st.login("google")` (OAuth nativo do
+  Streamlit), configurada pela seção `[auth]` de `.streamlit/secrets.toml`. Badge do usuário e
+  botão de logout na sidebar ([app.py](app.py) linha 216).
+- **Fase 3 — Credenciais por usuário** ([db.py](db.py), [app.py](app.py) linhas 219-239): cada
+  usuário cola o JSON da própria conta de serviço do Earth Engine, que é criptografado com Fernet
+  (`app_encryption_key` em `secrets.toml`) e persistido em SQLite (`data/app.db`), com formulário
+  de atualização das credenciais a qualquer momento.
 
 ### ⚠️ Bloqueio conhecido
-- O app depende de uma conta de serviço do Google Earth Engine configurada em
-  `.streamlit/secrets.toml` (ou credenciais locais via `earthengine authenticate`). Sem isso,
-  a aplicação sobe normalmente mas para na etapa de inicialização do Earth Engine.
+
+- Sem as credenciais do Earth Engine cadastradas pelo próprio usuário (fluxo da Fase 3), a
+  aplicação sobe normalmente mas para na etapa de inicialização do Earth Engine.
 
 ---
 
-## Próximas fases
-
-### Fase 1 — Landing page
-- Página inicial simples explicando o que o app faz, antes do usuário entrar na ferramenta.
-- Decisão pendente: página estática separada vs. primeira tela de um app multi-página do
-  Streamlit (`st.navigation` / pasta `pages/`).
-
-### Fase 2 — Login
-- Mecanismo de autenticação para identificar o usuário antes de liberar o uso do app.
-- Decisão pendente: login simples (usuário/senha local) vs. OAuth (Google) vs. link mágico por
-  e-mail. Afeta diretamente a Fase 3.
-
-### Fase 3 — Credenciais por usuário
-- Cada usuário poderá inserir suas próprias credenciais do Google Earth Engine para rodar as
-  análises com sua própria cota/projeto GCP, em vez de depender de uma única conta de serviço
-  compartilhada.
-- Decisão pendente: as credenciais são digitadas a cada sessão (guardadas só em memória,
-  mais simples e mais seguro) ou persistidas entre sessões (exige banco de dados e criptografia
-  em repouso, mais complexo)?
+## Próxima fase
 
 ### Fase 4 — Deploy
+
 - Publicar a imagem Docker em um ambiente com HTTPS antes de expor login/credenciais reais
   (evitar transmitir segredos em texto puro).
+- Decisões pendentes: provedor de hospedagem, domínio, `redirect_uri` de produção para o OAuth do
+  Google, e onde persistir `data/app.db` fora do ciclo de vida do container.
 
 ---
 
