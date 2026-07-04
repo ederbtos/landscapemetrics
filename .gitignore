@@ -133,3 +133,6 @@ dmypy.json
 
 # Banco local (credenciais criptografadas por usuário)
 data/
+
+# Configuração de deploy específica de uma instância (domínio real)
+Caddyfile

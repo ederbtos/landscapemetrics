@@ -1,0 +1,43 @@
+# Stack de produção: mesma imagem do app, mas atrás de um proxy reverso
+# (Caddy) que termina HTTPS automaticamente via Let's Encrypt. Pensado para
+# ser genérico o suficiente para qualquer VPS com Docker — não é específico
+# de um provedor de hospedagem.
+#
+# Pré-requisitos antes de rodar:
+#   1. Um domínio com registro DNS tipo A apontando para o IP deste servidor.
+#   2. Portas 80 e 443 liberadas no firewall do servidor.
+#   3. cp Caddyfile.example Caddyfile   (e edite com o domínio real)
+#   4. .streamlit/secrets.toml configurado com [auth].redirect_uri usando
+#      esse domínio em HTTPS, ex.: https://seu-dominio.exemplo.com/oauth2callback
+#
+# Uso: docker compose -f docker-compose.prod.yml up -d --build
+#
+# Diferença deliberada em relação a docker-compose.yml (uso local): aqui a
+# porta 8501 do app NÃO é publicada para o host — todo o tráfego externo
+# passa pelo Caddy, que é o único serviço com portas expostas.
+services:
+  app:
+    build: .
+    expose:
+      - "8501"
+    volumes:
+      - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+      - ./data:/app/data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

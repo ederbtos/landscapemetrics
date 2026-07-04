@@ -1,0 +1,8 @@
+# Copie para "Caddyfile" e troque pelo domínio real antes de subir em produção.
+# Caddy obtém e renova o certificado HTTPS (Let's Encrypt) automaticamente,
+# desde que as portas 80 e 443 do servidor estejam acessíveis publicamente e
+# o domínio já aponte (registro DNS tipo A) para o IP deste servidor.
+
+seu-dominio.exemplo.com {
+	reverse_proxy app:8501
+}

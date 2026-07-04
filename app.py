@@ -533,7 +533,14 @@ if data:
                 st.info("📍 Área de interesse processada (mapa indisponível)")
                 st.text(f"Buffer de {buffer_dist}m aplicado ao ponto selecionado")
 
-        # Processamento dos dados MapBiomas - VERSÃO FINAL SEM ERROS
+        # Processamento dos dados MapBiomas
+        #
+        # Regra de negócio inegociável: se a extração de pixels reais falhar em
+        # qualquer estágio, o processamento PARA aqui (st.stop()) e nenhuma
+        # métrica/CSV é gerado. Versões anteriores substituíam a falha por uma
+        # matriz de exemplo fixa de Santa Catarina e seguiam como se os dados
+        # fossem reais — isso foi removido por risco de o usuário usar uma
+        # análise fabricada como se fosse do ponto que selecionou.
         with st.spinner("🛰️ Conectando ao MapBiomas..."):
             try:
                 # Assets oficiais do MapBiomas Collection 9
@@ -597,7 +604,18 @@ if data:
                 
                 mb_year = mb.select(classification_band)
                 
-                # Extração de dados - MÉTODO LIMPO
+                # Mínimo de pixels reais exigido para montar uma matriz 3x3 —
+                # abaixo disso não há dado suficiente para métricas confiáveis
+                # e o processamento deve falhar de forma explícita (ver bloco
+                # de exceção mais abaixo), nunca ser completado com valores
+                # inventados.
+                MIN_VALID_PIXELS = 9
+
+                # Extração de dados: tenta sampleRectangle e, se falhar ou
+                # vier vazio, recua para reduceRegion. Qualquer falha nos dois
+                # métodos propaga para o "except Exception as mb_error" logo
+                # abaixo, que interrompe o processamento — não há mais um
+                # terceiro nível de fallback com dados fabricados.
                 try:
                     st.info("📊 Extraindo dados via sampleRectangle...")
                     sample_result = mb_year.sampleRectangle(
@@ -606,102 +624,66 @@ if data:
                     )
                     array_data = sample_result.get(classification_band).getInfo()
                     np_arr_mb = np.array(array_data)
-                    
+
                     if np_arr_mb.size > 0 and not np.all(np_arr_mb == 0):
                         st.success("✅ Dados extraídos com sucesso")
                     else:
-                        raise ValueError("Dados insuficientes")
-                        
+                        raise ValueError("Dados insuficientes via sampleRectangle")
+
                 except Exception as sample_error:
                     logger.warning(f"sampleRectangle falhou: {sample_error}")
-                    st.info("🔄 Usando método alternativo...")
-                    
-                    try:
-                        # Método reduceRegion CORRETO - SEM PARÂMETROS INVÁLIDOS
-                        reduction = mb_year.reduceRegion(
-                            reducer=ee.Reducer.toList(),
-                            geometry=roi_buffer,
-                            scale=30,
-                            maxPixels=1e8,
-                            bestEffort=True
-                        )
-                        
-                        values_list = reduction.get(classification_band).getInfo()
-                        
-                        if not values_list or len(values_list) == 0:
-                            raise ValueError("Nenhum pixel na região")
-                        
-                        # Filtra e processa valores
-                        valid_values = [int(v) for v in values_list if v is not None and v != 0]
-                        
-                        if len(valid_values) < 9:
-                            # Mesmo aqui: se a região retornou poucos pixels válidos
-                            # (buffer pequeno ou região sem cobertura no asset), o
-                            # array final é COMPLETADO com classes fixas de Santa
-                            # Catarina só para atingir tamanho mínimo de plotagem —
-                            # ou seja, parte dos "dados extraídos" reportados ao
-                            # usuário pode não ser real. Preenche com classes típicas de SC
-                            typical_classes = [15, 21, 4, 18, 12]  # Pastagem, Mosaico, Floresta, Agricultura, Campo
-                            while len(valid_values) < 9:
-                                valid_values.extend(typical_classes[:9-len(valid_values)])
-                        
-                        # Cria array 2D
-                        side = max(3, int(np.sqrt(len(valid_values))))
-                        total_needed = side * side
-                        
-                        if len(valid_values) > total_needed:
-                            valid_values = valid_values[:total_needed]
-                        elif len(valid_values) < total_needed:
-                            valid_values.extend([valid_values[0]] * (total_needed - len(valid_values)))
-                        
-                        np_arr_mb = np.array(valid_values).reshape(side, side)
-                        st.success(f"✅ Dados extraídos: {len(valid_values)} pixels válidos")
-                        
-                    except Exception as reduce_error:
-                        logger.error(f"Todos os métodos falharam: {reduce_error}")
-                        st.warning("⚠️ Usando dados representativos de Santa Catarina")
+                    st.info("🔄 Usando método alternativo (reduceRegion)...")
 
-                        # ATENÇÃO: a partir daqui os dados NÃO têm nenhuma relação
-                        # com o ponto/buffer selecionado pelo usuário — é uma matriz
-                        # fixa de exemplo. O fluxo segue adiante como se a extração
-                        # tivesse funcionado (métricas calculadas, gráfico exibido,
-                        # CSV liberado para download), com o único aviso sendo este
-                        # st.warning acima. Risco de negócio: o usuário pode baixar
-                        # e usar como real uma análise que é, na prática, um mock.
-                        # Dados baseados em estudos reais para SC
-                        np_arr_mb = np.array([
-                            [15, 15, 21, 15, 4, 4],
-                            [15, 21, 21, 4, 4, 18],
-                            [21, 4, 4, 12, 18, 18],
-                            [15, 15, 18, 18, 12, 4],
-                            [4, 4, 12, 21, 18, 15],
-                            [15, 21, 18, 4, 4, 26]
-                        ])
-                        
-                        st.info("📊 Composição típica: Pastagem 35%, Floresta 30%, Agricultura 25%, Outros 10%")
-                
+                    reduction = mb_year.reduceRegion(
+                        reducer=ee.Reducer.toList(),
+                        geometry=roi_buffer,
+                        scale=30,
+                        maxPixels=1e8,
+                        bestEffort=True
+                    )
+
+                    values_list = reduction.get(classification_band).getInfo()
+
+                    # Filtra pixels reais (0 = sem observação no MapBiomas)
+                    valid_values = [int(v) for v in (values_list or []) if v is not None and v != 0]
+
+                    if len(valid_values) < MIN_VALID_PIXELS:
+                        raise ValueError(
+                            f"Apenas {len(valid_values)} pixel(is) válido(s) na área selecionada "
+                            f"(mínimo necessário: {MIN_VALID_PIXELS}). Aumente o buffer ou "
+                            "escolha outro ponto."
+                        )
+
+                    # Trunca para o maior quadrado perfeito que cabe nos
+                    # pixels válidos disponíveis — nunca preenche com valores
+                    # repetidos ou inventados.
+                    side = int(np.sqrt(len(valid_values)))
+                    total_needed = side * side
+                    valid_values = valid_values[:total_needed]
+
+                    np_arr_mb = np.array(valid_values).reshape(side, side)
+                    st.success(f"✅ Dados extraídos: {len(valid_values)} pixels válidos")
+
                 # Verifica dados finais
                 unique_values = np.unique(np_arr_mb)
                 st.success(f"✅ Dados processados: {np_arr_mb.shape[0]}×{np_arr_mb.shape[1]} pixels")
                 st.info(f"📊 Classes encontradas: {len(unique_values)} → {unique_values}")
-                
+
             except Exception as mb_error:
                 logger.error(f"Erro MapBiomas: {mb_error}")
-                st.error("❌ Erro no MapBiomas - usando dados de demonstração")
-
-                # Mesmo risco do bloco de fallback do reduceRegion acima: dados
-                # fixos, desconectados do ponto real, seguem para o cálculo de
-                # métricas e para o CSV de download como se fossem válidos.
-                # Dados sintéticos de alta qualidade para SC
-                np_arr_mb = np.array([
-                    [15, 15, 21, 15, 4, 4, 15],
-                    [15, 21, 21, 4, 4, 4, 18],
-                    [21, 4, 4, 12, 18, 18, 18],
-                    [15, 15, 18, 18, 12, 4, 21],
-                    [4, 4, 12, 21, 18, 15, 15],
-                    [15, 21, 18, 4, 4, 26, 15],
-                    [18, 18, 15, 15, 21, 4, 4]
-                ])
+                st.error(
+                    "❌ Não foi possível extrair dados reais do MapBiomas para esta área. "
+                    "Isso não gera uma análise substituta com dados de exemplo — a extração "
+                    "real é obrigatória para que as métricas exibidas sejam confiáveis."
+                )
+                with st.expander("🔍 Detalhes do erro"):
+                    st.error(str(mb_error))
+                st.info(
+                    "💡 Possíveis causas: buffer muito pequeno, região sem cobertura no "
+                    "asset MapBiomas, ou instabilidade temporária do Earth Engine. Tente "
+                    "novamente, aumente o raio do buffer ou selecione outro ponto."
+                )
+                st.stop()
 
         # Análise da paisagem
         with col2:
