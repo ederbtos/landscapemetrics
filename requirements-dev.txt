@@ -1,0 +1,5 @@
+# Dependências extras para rodar a suíte de testes (ver documentation/13_testing.md).
+# Instalar por cima de requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+pytest==9.1.1
+pytest-mock==3.15.1

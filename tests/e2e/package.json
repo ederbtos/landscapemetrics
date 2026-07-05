@@ -1,0 +1,12 @@
+{
+  "name": "landscapemetrics-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Smoke test E2E (Playwright) do fluxo de login do Landscape Metrics Extractor. Ver README.md deste diretório e documentation/13_testing.md.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}
