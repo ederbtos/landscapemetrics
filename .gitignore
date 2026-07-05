@@ -136,3 +136,9 @@ data/
 
 # Configuração de deploy específica de uma instância (domínio real)
 Caddyfile
+
+# Testes E2E (Playwright) — tests/e2e
+tests/e2e/node_modules/
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+tests/e2e/package-lock.json

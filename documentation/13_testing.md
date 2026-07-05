@@ -30,14 +30,24 @@ executados em CI — são isolados e pulados por padrão (ver `tests/README.md`)
 
 ```
 tests/
-├── conftest.py          # fixtures: banco SQLite temporário, secrets de teste
-├── test_db.py           # CRUD de usuários e credenciais (db.py)
-├── test_auth.py         # criação/validação de JWT, regex de e-mail (auth.py)
-├── test_app_validation.py   # validate_file_upload, uploaded_file_to_gdf (app.py)
-├── test_app_tif.py       # extract_landscape_from_tif com GeoTIFFs sintéticos gerados em memória
+├── conftest.py              # fixtures: banco SQLite temporário, secrets de teste, fix de PROJ_LIB
+├── helpers.py                # dublê de upload do Streamlit + gerador de GeoTIFF sintético
+├── test_db.py                # CRUD de usuários e credenciais (db.py)
+├── test_auth.py               # criação/validação de JWT, regex de e-mail (auth.py)
+├── test_app_validation.py     # validate_file_upload, uploaded_file_to_gdf (app.py)
+├── test_app_tif.py            # extract_landscape_from_tif com GeoTIFFs sintéticos gerados em memória
 └── e2e/
-    └── test_login_flow.spec.ts   # Playwright: landing page → cadastro → erro de credencial
+    ├── login-flow.spec.ts      # Playwright: landing page → cadastro/login → mensagens de erro
+    ├── playwright.config.ts
+    ├── package.json
+    └── README.md               # como rodar contra uma instância local do app
 ```
+
+> **Pré-requisito para `import app` funcionar em teste**: `app.py` foi reestruturado para envolver
+> o corpo do script (login, pipeline, UI) em uma função `main()`, chamada só sob
+> `if __name__ == "__main__":`. Sob `streamlit run app.py` o comportamento é idêntico a antes;
+> a mudança existe só para que `import app` num processo pytest não dispare a aplicação inteira
+> (o que antes travava com `RuntimeError` fora de um `ScriptRunContext` real do Streamlit).
 
 ## Cobertura por entidade/função
 

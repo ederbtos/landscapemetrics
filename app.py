@@ -15,41 +15,48 @@ Script Streamlit executado top-to-bottom a cada interação do usuário (não é
 uma API REST). Depende de: auth.py (login), db.py (credenciais do Earth
 Engine por usuário), Earth Engine (`ee`) para acesso aos rasters do
 MapBiomas, geemap/streamlit-folium para os mapas interativos e PyLandStats
-para o cálculo das métricas de paisagem propriamente ditas.
+para o cálculo das métricas de paisagem propriamente ditas. As funções de
+domínio (validate_file_upload, initialize_ee, uploaded_file_to_gdf,
+extract_landscape_from_tif etc.) ficam no topo do módulo; o restante do
+script (login, pipeline, renderização) fica dentro de main(), chamada só sob
+`if __name__ == "__main__":` — isso preserva o comportamento sob
+`streamlit run app.py` (que executa o script como `__main__`) e ao mesmo
+tempo permite `import app` num processo de teste sem disparar a aplicação
+inteira (ver tests/test_app_validation.py e tests/test_app_tif.py).
 
 Regras de negócio
 ------------------
 - Um único ponto de interesse por execução; múltiplos pontos no GeoJSON são
-  rejeitados (linha ~382).
+  rejeitados (dentro de main(), logo após a conversão do GeoJSON).
 - Buffer configurável entre MIN_BUFFER e MAX_BUFFER metros ao redor do ponto.
 - Upload restrito a `.geojson` até MAX_FILE_SIZE, com sanitização de nome de
   arquivo (ver validate_file_upload).
+- Nenhuma métrica é exibida ou exportada sem dados reais por trás: se a
+  extração via Earth Engine (ou do GeoTIFF próprio) falhar em qualquer
+  estágio, o processamento é interrompido com uma mensagem explicando a
+  causa provável, nunca substituído por dados fabricados (ver
+  "Mudança de arquitetura" no ROADMAP.md — uma versão anterior deste app
+  chegou a mascarar essas falhas com uma matriz fixa fictícia de exemplo;
+  esse comportamento foi removido deliberadamente por risco de o usuário
+  tratar uma análise inválida como real).
 
 Pontos de atenção
 ------------------
-- RISCO DE INTEGRIDADE DE DADOS: quando a extração via Earth Engine falha em
-  qualquer estágio (asset indisponível, sampleRectangle, reduceRegion), o
-  fluxo principal substitui os dados reais por arrays codificados
-  ("dados representativos de Santa Catarina") e segue exibindo
-  gráficos/métricas/CSV normalmente, apenas com um `st.warning`/`st.error`
-  acima. Um usuário que não leia a mensagem pode baixar e usar como real uma
-  análise que não tem nenhuma relação com o ponto que selecionou. Ver
-  comentários nos blocos de fallback abaixo.
-- Múltiplos blocos de try/except aninhados com lógica de fallback duplicada
-  tornam o fluxo difícil de auditar e de testar; um refactor extraindo cada
-  etapa (seleção de asset, extração de pixels, cálculo de métricas) em
-  funções puras testáveis reduziria bastante o risco acima.
-- `except:` bare no botão "Status GEE" (linha ~276) engole qualquer exceção,
+- Múltiplos blocos de try/except aninhados com lógica de fallback (troca de
+  collection do MapBiomas, sampleRectangle → reduceRegion) tornam o fluxo
+  difícil de auditar e de testar; um refactor extraindo cada etapa (seleção
+  de asset, extração de pixels, cálculo de métricas) em funções puras
+  testáveis, além das já extraídas, reduziria esse custo de manutenção.
+- `except:` bare no botão "Status GEE" (sidebar) engole qualquer exceção,
   inclusive erros de programação, não só falha de conectividade.
 
 Melhorias sugeridas
 ---------------------
-- Nunca substituir dados reais por dados sintéticos de forma transparente ao
-  usuário: falhar explicitamente (ou, no mínimo, bloquear o download do CSV)
-  quando a extração do Earth Engine não tiver sucesso.
-- Extrair a lógica de negócio (seleção de asset MapBiomas, extração de
-  pixels, cálculo de métricas) do corpo do script Streamlit para funções
-  puras, permitindo testes unitários sem precisar renderizar a UI.
+- Extrair a lógica de negócio do pipeline principal (seleção de asset
+  MapBiomas, extração de pixels, cálculo de métricas) do corpo de main()
+  para funções puras adicionais, no mesmo espírito de
+  extract_landscape_from_tif — reduz ainda mais a superfície não testada
+  automaticamente (ver documentation/13_testing.md).
 """
 # Instalacao de bibliotecas necessarias
 import streamlit as st

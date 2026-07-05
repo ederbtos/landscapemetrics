@@ -6,6 +6,7 @@
 detalhes.
 
 **Causas mais comuns** (na ordem sugerida pelo próprio app em `app.initialize_ee`):
+
 1. JSON da conta de serviço incorreto ou incompleto.
 2. Conta de serviço sem as permissões necessárias no GCP.
 3. Earth Engine API não habilitada no projeto do GCP associado à conta de serviço.
@@ -28,6 +29,7 @@ original — é necessário recadastrá-la.
 ## "Não foi possível extrair dados reais do MapBiomas para esta área"
 
 **Causas possíveis** (listadas na própria mensagem de erro do app):
+
 - Buffer muito pequeno para a área ter pixels válidos suficientes.
 - Região sem cobertura no asset do MapBiomas.
 - Instabilidade temporária do Earth Engine.
@@ -69,10 +71,37 @@ e-mail/senha (não é obrigatório configurar o Google).
 ## Erro ao subir com Docker: certificado HTTPS não é emitido
 
 **Causas mais comuns**:
+
 - DNS ainda não propagou (`dig +short seu-dominio.com` não retorna o IP do servidor).
 - Portas 80/443 bloqueadas no firewall do servidor.
 
 **Como diagnosticar**: `docker compose -f docker-compose.prod.yml logs -f caddy`.
+
+## Erro de CRS envolvendo "DATABASE.LAYOUT.VERSION.MINOR" (Windows)
+
+**Sintoma**: qualquer operação envolvendo CRS no GeoTIFF próprio (`extract_landscape_from_tif`)
+falha com uma mensagem do PROJ mencionando `DATABASE.LAYOUT.VERSION.MINOR ... whereas a number >=
+5 is expected` ou `The EPSG code is unknown`.
+
+**Causa**: uma variável de ambiente `PROJ_LIB` (ou `PROJ_DATA`) definida globalmente no Windows —
+comumente pelo instalador do PostgreSQL/PostGIS — aponta para um `proj.db` de uma versão do PROJ
+incompatível com a que o `rasterio`/`pyproj` deste projeto esperam. Isso não é um bug do código:
+é um conflito entre a instalação do PostGIS e a instalação Python usada pelo app, e afeta o app
+de verdade (não só os testes) quando rodado **localmente sem Docker** nessa máquina — dentro do
+container Docker não ocorre, pois a imagem não tem PostgreSQL instalado.
+
+**Como resolver** (rodando localmente, fora do Docker): apontar `PROJ_LIB`/`PROJ_DATA`
+explicitamente para o `proj_data` que vem dentro do próprio pacote `rasterio` instalado, antes de
+rodar o app:
+
+```powershell
+$env:PROJ_LIB = (python -c "import rasterio, os; print(os.path.join(os.path.dirname(rasterio.__file__), 'proj_data'))")
+$env:PROJ_DATA = $env:PROJ_LIB
+streamlit run app.py
+```
+
+Os testes automatizados (`tests/conftest.py`) já aplicam essa mesma correção automaticamente, então
+`pytest tests/` funciona independentemente dessa variável de ambiente da máquina.
 
 ## Upload de GeoTIFF grande falha ou trava
 
