@@ -1,0 +1,5 @@
+# server.maxUploadSize é em MB. Precisa bater com MAX_TIF_SIZE em app.py
+# (5GB) para suportar o upload de GeoTIFFs grandes como fonte de dados
+# alternativa ao MapBiomas/Earth Engine.
+[server]
+maxUploadSize = 5120

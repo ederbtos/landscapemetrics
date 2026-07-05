@@ -13,7 +13,9 @@ de banco separado) em `DB_PATH` (padrão `data/app.db`, path relativo ao
 diretório de trabalho do processo — no container é montado como volume via
 docker-compose para sobreviver a rebuilds). O e-mail vindo de auth.py é a
 chave primária. O JSON da credencial é cifrado em repouso com Fernet
-(criptografia simétrica autenticada) antes de tocar o disco.
+(criptografia simétrica autenticada) antes de tocar o disco. A tabela
+`users` guarda as contas do próprio app (login por e-mail/senha, ver
+auth.py): senha nunca em texto puro, só o hash bcrypt.
 
 Regras de negócio
 ------------------
@@ -49,6 +51,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 
+import bcrypt
 import streamlit as st
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -78,7 +81,42 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                email TEXT PRIMARY KEY,
+                password_hash BLOB NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
+
+
+def create_user(email: str, password: str) -> bool:
+    """Cria um usuário novo. Retorna False se o e-mail já estiver cadastrado."""
+    password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        try:
+            conn.execute(
+                "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
+                (email, password_hash, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            return False
+    return True
+
+
+def verify_user(email: str, password: str) -> bool:
+    """Confere e-mail/senha contra o hash salvo."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE email = ?", (email,)
+        ).fetchone()
+    if row is None:
+        return False
+    return bcrypt.checkpw(password.encode("utf-8"), row[0])
 
 
 def get_credentials(email: str) -> dict | None:
