@@ -12,8 +12,11 @@ import json
 
 import pytest
 
+import zipfile
+import io
+
 import app
-from tests.helpers import FakeUploadedFile
+from tests.helpers import FakeUploadedFile, make_point_shapefile_zip
 
 
 VALID_GEOJSON_ONE_POINT = json.dumps(
@@ -62,6 +65,11 @@ class TestValidateFileUpload:
         is_valid, _ = app.validate_file_upload(fake, allowed_extensions={".tif"}, max_size=2000)
         assert is_valid is True
 
+    def test_accepts_zip_shapefile_extension(self):
+        fake = FakeUploadedFile("ponto.zip", make_point_shapefile_zip())
+        is_valid, _ = app.validate_file_upload(fake)
+        assert is_valid is True
+
 
 class TestUploadedFileToGdf:
     def test_converts_valid_geojson_with_one_point(self):
@@ -80,4 +88,21 @@ class TestUploadedFileToGdf:
         fake = FakeUploadedFile("area.geojson", VALID_GEOJSON_ONE_POINT)
         fake.size = app.MAX_FILE_SIZE + 1
         with pytest.raises(Exception):
+            app.uploaded_file_to_gdf.__wrapped__(fake)
+
+    def test_converts_valid_point_shapefile_zip(self):
+        fake = FakeUploadedFile("ponto.zip", make_point_shapefile_zip(lon=-47.9292, lat=-15.7801))
+        gdf = app.uploaded_file_to_gdf.__wrapped__(fake)
+        assert len(gdf) == 1
+        assert gdf.crs is not None
+        point = gdf.geometry.iloc[0]
+        assert point.x == pytest.approx(-47.9292)
+        assert point.y == pytest.approx(-15.7801)
+
+    def test_rejects_zip_without_shapefile_inside(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("readme.txt", "nao tem shapefile aqui")
+        fake = FakeUploadedFile("vazio.zip", buf.getvalue())
+        with pytest.raises(ValueError, match="shapefile"):
             app.uploaded_file_to_gdf.__wrapped__(fake)

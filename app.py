@@ -26,11 +26,12 @@ inteira (ver tests/test_app_validation.py e tests/test_app_tif.py).
 
 Regras de negócio
 ------------------
-- Um único ponto de interesse por execução; múltiplos pontos no GeoJSON são
-  rejeitados (dentro de main(), logo após a conversão do GeoJSON).
+- Um único ponto de interesse por execução; múltiplos pontos no arquivo são
+  rejeitados (dentro de main(), logo após a conversão para GeoDataFrame).
 - Buffer configurável entre MIN_BUFFER e MAX_BUFFER metros ao redor do ponto.
-- Upload restrito a `.geojson` até MAX_FILE_SIZE, com sanitização de nome de
-  arquivo (ver validate_file_upload).
+- Upload do ponto restrito a `.geojson` ou shapefile compactado em `.zip`
+  (`.shp`+`.shx`+`.dbf`+`.prj`), até MAX_FILE_SIZE, com sanitização de nome
+  de arquivo (ver validate_file_upload).
 - Nenhuma métrica é exibida ou exportada sem dados reais por trás: se a
   extração via Earth Engine (ou do GeoTIFF próprio) falhar em qualquer
   estágio, o processamento é interrompido com uma mensagem explicando a
@@ -101,7 +102,7 @@ collections.Callable = collections.abc.Callable
 
 # Configurações de segurança
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-ALLOWED_EXTENSIONS = {'.geojson'}
+ALLOWED_EXTENSIONS = {'.geojson', '.zip'}  # .zip = shapefile compactado (.shp+.shx+.dbf+.prj)
 MAX_TIF_SIZE = 5 * 1024 * 1024 * 1024  # 5GB (server.maxUploadSize em .streamlit/config.toml precisa bater com isso)
 ALLOWED_TIF_EXTENSIONS = {'.tif', '.tiff'}
 MIN_BUFFER = 1000
@@ -229,14 +230,28 @@ def uploaded_file_to_gdf(data):
                     except:
                         pass
                     gdf = gpd.read_file(file_path, driver="KML")
+                elif file_extension == ".zip":
+                    # Shapefile compactado (.shp+.shx+.dbf+.prj dentro do .zip): lido
+                    # direto de dentro do arquivo via VSI do GDAL (prefixo "zip://"),
+                    # sem precisar extrair os componentes em disco antes.
+                    gdf = gpd.read_file(f"zip://{file_path}")
                 else:
                     # Para GeoJSON, lê normalmente
                     gdf = gpd.read_file(file_path)
-                    
+
             except Exception as read_error:
+                if file_extension == ".zip":
+                    # Um .zip que falha aqui não é um GeoJSON alternativo — não faz
+                    # sentido tentar o fallback de JSON abaixo (o conteúdo é binário).
+                    raise ValueError(
+                        f"Não foi possível ler o shapefile enviado: {read_error}. "
+                        "Confirme que o .zip contém .shp, .shx, .dbf (e .prj, se possível) "
+                        "na raiz do arquivo."
+                    ) from read_error
+
                 # Fallback: tenta ler como JSON puro e converter
                 logger.warning(f"Erro na leitura padrão: {read_error}. Tentando método alternativo...")
-                
+
                 with open(file_path, 'r', encoding='utf-8') as f:
                     geojson_data = json.load(f)
                 
@@ -435,7 +450,7 @@ def main() -> None:
     with st.sidebar:
         st.markdown("### 🔒 Informações")
         st.info(f"""
-    📁 GeoJSON máx: {MAX_FILE_SIZE // (1024*1024)}MB
+    📁 Ponto (GeoJSON/.zip) máx: {MAX_FILE_SIZE // (1024*1024)}MB
     📁 GeoTIFF máx: {MAX_TIF_SIZE // (1024*1024*1024)}GB
     📍 Apenas 1 ponto por vez
     🔧 Buffer: {MIN_BUFFER}-{MAX_BUFFER}m
@@ -500,14 +515,18 @@ def main() -> None:
 
     # Seção 2: Upload do arquivo
     st.markdown(
-        "<h3>2) Upload do arquivo GeoJSON 📤</h3>",
+        "<h3>2) Upload do ponto de interesse 📤</h3>",
         unsafe_allow_html=True,
     )
 
     data = st.file_uploader(
-        f"📁 Faça upload do arquivo GeoJSON exportado acima",
-        type=["geojson"],
-        help=f"Limite: {MAX_FILE_SIZE // (1024*1024)}MB • Apenas arquivos GeoJSON são aceitos"
+        "📁 Faça upload do GeoJSON exportado acima, ou de um shapefile do ponto compactado em .zip",
+        type=["geojson", "zip"],
+        help=(
+            f"Limite: {MAX_FILE_SIZE // (1024*1024)}MB • GeoJSON (.geojson) ou shapefile "
+            "compactado (.zip com .shp+.shx+.dbf+.prj) — em ambos os casos, com exatamente "
+            "1 ponto"
+        ),
     )
 
     st.markdown("---")
@@ -847,125 +866,125 @@ def main() -> None:
                             finally:
                                 tif_progress.empty()
 
-                            # Instancia PyLandStats com validação
-                            st.write("📊 Calculando métricas da paisagem (PyLandStats)...")
-                            try:
-                                if np_arr_mb.shape[0] < 3 or np_arr_mb.shape[1] < 3:
-                                    st.write("⚠️ Área pequena, expandindo para análise...")
-                                    np_arr_mb = np.pad(np_arr_mb, ((1, 1), (1, 1)), mode='constant', constant_values=0)
+                        # Instancia PyLandStats com validação
+                        st.write("📊 Calculando métricas da paisagem (PyLandStats)...")
+                        try:
+                            if np_arr_mb.shape[0] < 3 or np_arr_mb.shape[1] < 3:
+                                st.write("⚠️ Área pequena, expandindo para análise...")
+                                np_arr_mb = np.pad(np_arr_mb, ((1, 1), (1, 1)), mode='constant', constant_values=0)
 
-                                ls = pls.Landscape(np_arr_mb, res=resolution)
-                            except Exception as pls_error:
-                                logger.error(f"Erro no PyLandStats: {pls_error}")
-                                raise RuntimeError(
-                                    f"Erro ao processar métricas da paisagem: {pls_error}. Forma do "
-                                    f"array: {np_arr_mb.shape}. Valores únicos: {np.unique(np_arr_mb)}"
-                                ) from pls_error
+                            ls = pls.Landscape(np_arr_mb, res=resolution)
+                        except Exception as pls_error:
+                            logger.error(f"Erro no PyLandStats: {pls_error}")
+                            raise RuntimeError(
+                                f"Erro ao processar métricas da paisagem: {pls_error}. Forma do "
+                                f"array: {np_arr_mb.shape}. Valores únicos: {np.unique(np_arr_mb)}"
+                            ) from pls_error
 
-                            # Cálculo das métricas
-                            st.write("🔢 Computando métricas detalhadas...")
-                            try:
-                                # Calcula métricas de classe
-                                class_metrics_df = ls.compute_class_metrics_df(
-                                    metrics=[
-                                        'total_area', 'proportion_of_landscape', 'number_of_patches',
-                                        'largest_patch_index', 'total_edge', 'landscape_shape_index',
-                                        'area_mn', 'perimeter_mn', 'perimeter_area_ratio_mn',
-                                        'shape_index_mn', 'fractal_dimension_mn', 'euclidean_nearest_neighbor_mn'
-                                    ]
-                                )
-
-                                # Processa índices das classes
-                                classes_index = list(map(int, class_metrics_df.index))
-
-                                # Dicionário de legendas MapBiomas completo
-                                # Limitação conhecida: mapeamento fixo por posição de índice,
-                                # construído a partir do esquema de classes da Collection
-                                # (aprox. 9); classes não usadas nesse esquema ficam como ' '.
-                                # Se uma collection mais nova mudar/adicionar códigos de classe
-                                # (ver seleção de asset acima), este dicionário precisa ser
-                                # atualizado manualmente — não há acoplamento automático entre
-                                # a collection selecionada e a legenda usada aqui.
-                                legend_keys = [
-                                    ' ',  # 0
-                                    'Floresta',  # 1
-                                    ' ',  # 2
-                                    'Formacao florestal',  # 3
-                                    'Savana',  # 4
-                                    'Mangue',  # 5
-                                    ' ', ' ', ' ',  # 6-8
-                                    'Silvicultura',  # 9
-                                    'Formação natural nao-florestal',  # 10
-                                    'Campo Alagado e Área Pantanosa',  # 11
-                                    'Campos',  # 12
-                                    'Outras formacoes nao-florestais',  # 13
-                                    'Agropecuaria',  # 14
-                                    'Pastagem',  # 15
-                                    ' ', ' ',  # 16-17
-                                    'Agricultura',  # 18
-                                    'Agricultura temporarias',  # 19
-                                    'Cana',  # 20
-                                    'Mosaico de Agricultura e Pastagem',  # 21
-                                    'Area nao Vegetada',  # 22
-                                    'Dunas',  # 23
-                                    'Area Urbanizada',  # 24
-                                    'Outras areas nao vegetadas',  # 25
-                                    'Agua',  # 26
-                                    'Nao Observado',  # 27
-                                    ' ',  # 28
-                                    'Afloramento rochoso',  # 29
-                                    'Mineracao',  # 30
-                                    'Aquicultura',  # 31
-                                    'Sal',  # 32
-                                    'Rio, lago e oceano',  # 33
-                                    ' ', ' ',  # 34-35
-                                    'Lavoura Perene',  # 36
-                                    ' ', ' ',  # 37-38
-                                    'Soja',  # 39
-                                    'Arroz',  # 40
-                                    'Outras culturas temporarias',  # 41
-                                    ' ', ' ', ' ', ' ',  # 42-45
-                                    'Cafe',  # 46
-                                    'Citrus',  # 47
-                                    'Outras lavouras perenes',  # 48
-                                    'Restinga arborea'  # 49
+                        # Cálculo das métricas
+                        st.write("🔢 Computando métricas detalhadas...")
+                        try:
+                            # Calcula métricas de classe
+                            class_metrics_df = ls.compute_class_metrics_df(
+                                metrics=[
+                                    'total_area', 'proportion_of_landscape', 'number_of_patches',
+                                    'largest_patch_index', 'total_edge', 'landscape_shape_index',
+                                    'area_mn', 'perimeter_mn', 'perimeter_area_ratio_mn',
+                                    'shape_index_mn', 'fractal_dimension_mn', 'euclidean_nearest_neighbor_mn'
                                 ]
+                            )
 
-                                # Cria dicionário de legenda
-                                keys = list(range(len(legend_keys)))
-                                legend_dict = {keys[i]: legend_keys[i] for i in range(len(legend_keys))}
+                            # Processa índices das classes
+                            classes_index = list(map(int, class_metrics_df.index))
 
-                                # Substitui índices por nomes
-                                replaced_list = [legend_dict.get(x, f'Classe {x}') for x in classes_index]
-                                class_metrics_df.index = replaced_list
+                            # Dicionário de legendas MapBiomas completo
+                            # Limitação conhecida: mapeamento fixo por posição de índice,
+                            # construído a partir do esquema de classes da Collection
+                            # (aprox. 9); classes não usadas nesse esquema ficam como ' '.
+                            # Se uma collection mais nova mudar/adicionar códigos de classe
+                            # (ver seleção de asset acima), este dicionário precisa ser
+                            # atualizado manualmente — não há acoplamento automático entre
+                            # a collection selecionada e a legenda usada aqui.
+                            legend_keys = [
+                                ' ',  # 0
+                                'Floresta',  # 1
+                                ' ',  # 2
+                                'Formacao florestal',  # 3
+                                'Savana',  # 4
+                                'Mangue',  # 5
+                                ' ', ' ', ' ',  # 6-8
+                                'Silvicultura',  # 9
+                                'Formação natural nao-florestal',  # 10
+                                'Campo Alagado e Área Pantanosa',  # 11
+                                'Campos',  # 12
+                                'Outras formacoes nao-florestais',  # 13
+                                'Agropecuaria',  # 14
+                                'Pastagem',  # 15
+                                ' ', ' ',  # 16-17
+                                'Agricultura',  # 18
+                                'Agricultura temporarias',  # 19
+                                'Cana',  # 20
+                                'Mosaico de Agricultura e Pastagem',  # 21
+                                'Area nao Vegetada',  # 22
+                                'Dunas',  # 23
+                                'Area Urbanizada',  # 24
+                                'Outras areas nao vegetadas',  # 25
+                                'Agua',  # 26
+                                'Nao Observado',  # 27
+                                ' ',  # 28
+                                'Afloramento rochoso',  # 29
+                                'Mineracao',  # 30
+                                'Aquicultura',  # 31
+                                'Sal',  # 32
+                                'Rio, lago e oceano',  # 33
+                                ' ', ' ',  # 34-35
+                                'Lavoura Perene',  # 36
+                                ' ', ' ',  # 37-38
+                                'Soja',  # 39
+                                'Arroz',  # 40
+                                'Outras culturas temporarias',  # 41
+                                ' ', ' ', ' ', ' ',  # 42-45
+                                'Cafe',  # 46
+                                'Citrus',  # 47
+                                'Outras lavouras perenes',  # 48
+                                'Restinga arborea'  # 49
+                            ]
 
-                                # Filtra elementos com mais de 10% de proporção
-                                class_metrics_df_sub = class_metrics_df[class_metrics_df['proportion_of_landscape'] > 10]
-                                class_metrics_df_sub = class_metrics_df_sub.sort_values(by=['total_area'], ascending=False)
+                            # Cria dicionário de legenda
+                            keys = list(range(len(legend_keys)))
+                            legend_dict = {keys[i]: legend_keys[i] for i in range(len(legend_keys))}
 
-                                if class_metrics_df_sub.empty:
-                                    st.write("⚠️ Nenhuma classe com proporção > 10% encontrada. Mostrando todas as classes.")
-                                    class_metrics_df_sub = class_metrics_df.sort_values(by=['total_area'], ascending=False)
+                            # Substitui índices por nomes
+                            replaced_list = [legend_dict.get(x, f'Classe {x}') for x in classes_index]
+                            class_metrics_df.index = replaced_list
 
-                            except Exception as metrics_error:
-                                logger.error(f"Erro ao calcular métricas: {metrics_error}")
-                                raise RuntimeError(
-                                    f"Erro ao calcular métricas da paisagem: {metrics_error}"
-                                ) from metrics_error
+                            # Filtra elementos com mais de 10% de proporção
+                            class_metrics_df_sub = class_metrics_df[class_metrics_df['proportion_of_landscape'] > 10]
+                            class_metrics_df_sub = class_metrics_df_sub.sort_values(by=['total_area'], ascending=False)
 
-                            # Persiste tudo que a renderização abaixo precisa, para
-                            # sobreviver a reruns causados por outros widgets (ex.: o
-                            # botão de download do CSV) sem precisar refazer chamadas
-                            # ao Earth Engine/GeoTIFF.
-                            st.session_state["metrics_ready"] = True
-                            st.session_state["roi"] = roi
-                            st.session_state["roi_buffer"] = roi_buffer
-                            st.session_state["buffer_dist_used"] = buffer_dist
-                            st.session_state["np_arr_mb"] = np_arr_mb
-                            st.session_state["ls"] = ls
-                            st.session_state["class_metrics_df_sub"] = class_metrics_df_sub
+                            if class_metrics_df_sub.empty:
+                                st.write("⚠️ Nenhuma classe com proporção > 10% encontrada. Mostrando todas as classes.")
+                                class_metrics_df_sub = class_metrics_df.sort_values(by=['total_area'], ascending=False)
 
-                            pipeline_status.update(label="✅ Processamento concluído", state="complete")
+                        except Exception as metrics_error:
+                            logger.error(f"Erro ao calcular métricas: {metrics_error}")
+                            raise RuntimeError(
+                                f"Erro ao calcular métricas da paisagem: {metrics_error}"
+                            ) from metrics_error
+
+                        # Persiste tudo que a renderização abaixo precisa, para
+                        # sobreviver a reruns causados por outros widgets (ex.: o
+                        # botão de download do CSV) sem precisar refazer chamadas
+                        # ao Earth Engine/GeoTIFF.
+                        st.session_state["metrics_ready"] = True
+                        st.session_state["roi"] = roi
+                        st.session_state["roi_buffer"] = roi_buffer
+                        st.session_state["buffer_dist_used"] = buffer_dist
+                        st.session_state["np_arr_mb"] = np_arr_mb
+                        st.session_state["ls"] = ls
+                        st.session_state["class_metrics_df_sub"] = class_metrics_df_sub
+
+                        pipeline_status.update(label="✅ Processamento concluído", state="complete")
 
                     except Exception as pipeline_error:
                         logger.error(f"Erro no pipeline de processamento: {pipeline_error}")
