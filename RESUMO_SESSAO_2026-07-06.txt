@@ -1,0 +1,183 @@
+RESUMO DA SESSÃO — Landscape Metrics Extractor
+Data: 2026-07-06 / 2026-07-07
+================================================================
+
+Este arquivo documenta, em ordem cronológica, tudo que foi investigado,
+corrigido e implementado nesta sessão de trabalho no app.
+
+----------------------------------------------------------------
+1) VERIFICAÇÃO INICIAL DO APP (testes + Docker)
+----------------------------------------------------------------
+- Rodada a suíte pytest completa (38 testes) e os 4 testes E2E Playwright
+  de login — todos passando contra uma instância real do Streamlit.
+- Confirmado que o fluxo de cadastro/login/credencial GEE funciona
+  ponta a ponta (até o ponto de exigir uma credencial real do Earth Engine,
+  fora do escopo de teste automatizado).
+- Rebuild + subida do Docker (docker-compose.yml) para validar a imagem
+  local.
+
+----------------------------------------------------------------
+2) PEDIDO: BARRA DE PROGRESSO EM %
+----------------------------------------------------------------
+Pedido do usuário: durante o processamento, mostrar sempre em qual etapa o
+app está e quanto falta em percentual, independente da fonte de dados.
+
+Implementado em app.py:
+- Uma única barra de progresso geral (`overall_progress` / função
+  `_set_stage(fraction, label)`) cobrindo TODO o pipeline de cálculo:
+  preparar área de interesse -> extração de dados (MapBiomas ou GeoTIFF)
+  -> cálculo PyLandStats -> conclusão.
+- Texto da barra sempre mostra "<etapa> (<percentual>%)".
+- O progresso interno de leitura do GeoTIFF (bytes gravados/lidos) foi
+  remapeado para ocupar a faixa 25%-75% da barra geral, em vez de ter uma
+  barra separada isolada.
+
+----------------------------------------------------------------
+3) PEDIDO: MODO "RASTER INTEIRO" PARA GEOTIFF PRÓPRIO
+----------------------------------------------------------------
+Problema relatado: ao subir só um GeoTIFF (sem ponto de interesse), nada
+acontecia — a Seção 4 (buffer) e o botão de calcular nunca apareciam,
+porque o código exigia sempre um ponto (GeoJSON/shapefile) mesmo quando a
+fonte era um raster próprio.
+
+Implementado:
+- Se o usuário escolher "Meu raster (GeoTIFF)" e NÃO enviar um ponto na
+  Seção 2, o app agora calcula as métricas de paisagem para a extensão
+  INTEIRA do raster enviado, sem exigir ponto/buffer.
+- `extract_landscape_from_tif` ganhou parâmetros opcionais
+  (`point_lonlat`/`buffer_dist` agora podem ser `None`), com um modo de
+  leitura completa do raster quando ausentes.
+- O caminho MapBiomas continua sempre exigindo um ponto (é um asset
+  nacional, sem uma "extensão inteira" delimitada).
+- A renderização dos resultados se adapta: sem ponto, não há mapa de ROI
+  (só o gráfico das classes, em largura cheia).
+- 3 novos testes cobrindo esse modo em tests/test_app_tif.py.
+
+----------------------------------------------------------------
+4) BUG ENCONTRADO AO TESTAR: ARQUIVO REAL EM CRS GEOGRÁFICO
+----------------------------------------------------------------
+O usuário testou o modo raster inteiro com um arquivo real
+("Corte_255_2000.tif", MapBiomas recortado, ~3,49GB) e recebeu erro
+genérico. Investigação nos logs do Docker revelou a causa real:
+"O GeoTIFF precisa estar em uma projeção métrica (ex.: UTM) — este arquivo
+está em coordenadas geográficas (graus)".
+
+Diagnóstico do arquivo original:
+- CRS: geográfico (WGS84/graus)
+- Dimensões: 70.258 x 52.053 pixels (~3,66 bilhões de pixels)
+- Extensão: ~19° de longitude x ~14° de latitude (cobre boa parte do
+  Centro-Oeste/Norte do Brasil — várias zonas UTM)
+- RAM da máquina: 15,8GB totais (só 4,1GB livres no momento); Docker
+  (WSL2) limitado a ~7,7GB — cálculo de patches do PyLandStats sobre esse
+  tanto de pixel exigiria dezenas de GB, inviável nesse hardware.
+
+Decisão tomada com o usuário: reamostrar por MODA (nunca interpolar dado
+categórico) num fator 10x (30m -> ~300m, ~36,6 milhões de pixels) e depois
+reprojetar para EPSG:5880 (SIRGAS 2000 / Brazil Polyconic — projeção
+pensada pra minimizar distorção de área na extensão inteira do Brasil,
+melhor que uma única zona UTM pra essa área continental).
+
+Processado com um script Python (rasterio) fora do app, para os 3 anos
+disponíveis do usuário:
+- Corte_255_2000.tif -> Corte_255_2000_300m_epsg5880.tif (2,41MB)
+- Corte_255_2010.tif -> Corte_255_2010_300m_epsg5880.tif (2,49MB)
+- Corte_255_2020.tif -> Corte_255_2020_300m_epsg5880.tif (2,59MB)
+Todos salvos em C:\Users\TRENI\Downloads\.
+
+Nota técnica: durante esse processo, encontrado e corrigido um conflito de
+ambiente Windows (PROJ_LIB apontando pro proj.db do PostgreSQL/PostGIS em
+vez do pyproj/rasterio do venv do projeto) — mesmo fix já documentado em
+tests/conftest.py, aplicado no script auxiliar.
+
+Também diagnosticado: um "ClientDisconnect" no upload que ocorria mesmo
+com o arquivo pequeno era porque, num teste anterior, o usuário havia
+selecionado o arquivo ORIGINAL (3,49GB) em vez do reprojetado — não era um
+bug do app.
+
+----------------------------------------------------------------
+5) PEDIDO: REVELAÇÃO PROGRESSIVA DE CADA MÉTRICA
+----------------------------------------------------------------
+Pedido do usuário: ao calcular as métricas de paisagem, abrir uma
+seção/expander pra cada métrica conforme ela é computada, trazendo pra
+tela de forma mais "lúdica" (didática) em vez de só uma tabela técnica
+no final.
+
+Implementado:
+- Nova constante `METRICS_INFO` (nome interno + ícone + tradução de cada
+  uma das 12 métricas), fonte única reaproveitada tanto na revelação
+  progressiva quanto no expander "Detalhamento das métricas" do rodapé
+  (que antes duplicava a mesma lista em duas variáveis separadas).
+- Após calcular as métricas, o app agora abre um `st.expander` por
+  métrica (já expandido), mostrando ícone + nome + valores por classe,
+  com uma pequena pausa entre uma métrica e outra — e atualiza a barra de
+  progresso geral (95%-99%) conforme revela cada uma.
+
+----------------------------------------------------------------
+6) PEDIDO PRINCIPAL: REPROJEÇÃO AUTOMÁTICA NA PIPELINE DO APP
+----------------------------------------------------------------
+Pedido do usuário: já que sabemos como converter um GeoTIFF em graus para
+UTM/métrico, esse processo deveria estar dentro da pipeline do app — sem
+exigir que o usuário faça a conversão manualmente fora do app antes de
+subir o arquivo.
+
+Implementado em app.py (função extract_landscape_from_tif reescrita):
+- Se o GeoTIFF enviado estiver em CRS geográfico (graus), o app agora
+  reprojeta automaticamente ANTES de extrair os dados — não rejeita mais
+  com um erro pedindo conversão manual.
+- Com ponto de interesse: recorta uma janela pequena (com margem de
+  segurança) ao redor do ponto AINDA em graus (bem mais barato que
+  reprojetar o arquivo inteiro) e reprojeta só essa janela para a zona UTM
+  que contém o ponto (nova função `_utm_epsg_for_lonlat`, calcula o EPSG
+  correto a partir de longitude/latitude).
+- Sem ponto (modo raster inteiro): reprojeta para EPSG:5880 (mesma escolha
+  validada manualmente no item 4). Se o raster tiver mais de
+  `WHOLE_RASTER_MAX_PIXELS` (50 milhões), é reamostrado por moda antes da
+  reprojeção, pelo mesmo motivo de memória do item 4 — agora automático,
+  sem precisar de um script manual.
+- Reprojeção sempre com `Resampling.nearest` (nunca interpola valores de
+  classe — dado é categórico).
+- Nova função de apoio `_crop_and_mask_array` (recorta um array já em
+  memória pela geometria do buffer, sem precisar reabrir um arquivo em
+  disco) e `_array_to_geotiff_bytes` (serializa o array final como bytes
+  de GeoTIFF).
+- `extract_landscape_from_tif` agora retorna 3 valores em vez de 2:
+  `(array, resolution, reprojected_tif_bytes)` — o terceiro é `None` se
+  nada foi convertido, ou os bytes do GeoTIFF final (já reprojetado/
+  recortado) se houve conversão automática.
+- Novo botão "📥 Download GeoTIFF reprojetado" na seção de resultados,
+  visível só quando houve conversão — como o container Docker não tem
+  acesso à pasta Downloads do Windows (não é volume montado), a forma
+  correta de "salvar" o arquivo convertido é por esse botão de download
+  do próprio navegador (mesmo padrão já usado pro CSV).
+- requirements.txt: adicionado `affine==2.4.0` (agora importado
+  diretamente, antes só dependência transitiva do rasterio).
+- tests/test_app_tif.py: testes antigos que esperavam rejeição de CRS
+  geográfico foram substituídos por testes que confirmam a reprojeção
+  automática (ponto -> zona UTM correta; raster inteiro -> EPSG:5880), e
+  um teste direto da função `_utm_epsg_for_lonlat` contra zonas UTM
+  conhecidas (Brasília = 32723, Alemanha = 32632).
+- Suíte completa: 42 testes passando.
+
+----------------------------------------------------------------
+7) DOCUMENTAÇÃO ATUALIZADA
+----------------------------------------------------------------
+- ROADMAP.md: entradas novas para o bug do MapBiomas (2026-07-05), modo
+  raster inteiro, barra de progresso geral, revelação progressiva de
+  métricas e reprojeção automática (todos 2026-07-06).
+- README.md: funcionalidades, fluxo de uso (Passos 2-4), seção de
+  resultados, segurança e troubleshooting atualizados para refletir a
+  reprojeção automática e o modo raster inteiro.
+
+----------------------------------------------------------------
+8) ESTADO ATUAL
+----------------------------------------------------------------
+- Suíte pytest: 42 testes passando.
+- Docker: imagem reconstruída com o código atual, container saudável em
+  http://localhost:8501.
+- Arquivos de teste reprojetados manualmente (2000/2010/2020) disponíveis
+  em C:\Users\TRENI\Downloads\ — agora redundantes pra uso futuro, já que
+  o app reprojeta sozinho, mas úteis caso queira comparar resultado
+  manual vs. automático.
+- PENDENTE: testar no navegador o fluxo completo com a reprojeção
+  automática ativa (upload de um GeoTIFF em graus, com e sem ponto de
+  interesse) — ainda não validado visualmente nesta sessão.

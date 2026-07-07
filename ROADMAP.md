@@ -1,6 +1,6 @@
 # Roadmap — Landscape Metrics Extractor
 
-## Progresso geral: 93,75%
+## Progresso geral: 95%
 
 | Fase | Descrição | Status | % |
 | --- | --- | --- | --- |
@@ -8,12 +8,16 @@
 | 2 | Login (e-mail/senha + JWT, com Google OAuth opcional) | ✅ Concluída | 100% |
 | 3 | Credenciais por usuário | ✅ Concluída | 100% |
 | 4 | Deploy (HTTPS) | 🔧 Automatizada (1 comando), falta decisão de infra + execução | 75% |
+| 5 | Motor de métricas de paisagem | ✅ Concluída | 100% |
 
 > O percentual mede fases do roadmap entregues. A Fase 4 tem toda a mecânica pronta e
 > automatizada em um único comando ([scripts/deploy.sh](scripts/deploy.sh), usando
 > [docker-compose.prod.yml](docker-compose.prod.yml) e [Caddyfile.example](Caddyfile.example)),
 > mas os 100% só são atingidos com uma publicação real, o que depende de uma decisão que só quem
-> hospeda o app pode tomar: qual servidor/domínio usar. Ver "Fase 4 — Deploy" abaixo.
+> hospeda o app pode tomar: qual servidor/domínio usar. Ver "Fase 4 — Deploy" abaixo. A Fase 5
+> (adicionada em 2026-07-07) cobre o motor de cálculo em si — fonte de dados (MapBiomas/GeoTIFF
+> próprio, um ou vários arquivos), reprojeção automática, e a cobertura de métricas do FRAGSTATS
+> (classe + paisagem) — ver "Status atual" abaixo para o detalhamento item a item.
 
 ## Status atual (2026-07-04)
 
@@ -93,6 +97,142 @@
 - **Configuração Docker validada localmente (2026-07-04)**: `secrets.toml` preenchido e stack
   local (`docker-compose.yml`) testada com sucesso — reduz o risco da execução da Fase 4, mas o
   deploy em si (servidor/domínio públicos) ainda não foi feito.
+- **Bug crítico corrigido (2026-07-05)**: o bloco que instancia o PyLandStats e marca
+  `metrics_ready=True` estava aninhado só no `else` (caminho do GeoTIFF próprio) do `if/else` de
+  `data_source` — escolher "MapBiomas (Google Earth Engine)" e clicar em "Calcular métricas"
+  extraía os pixels mas nunca calculava nem exibia nada, sem erro visível. Bug pré-existente
+  (não introduzido nesta sessão), corrigido em [app.py](app.py) e confirmado pelo usuário testando
+  o fluxo real com Earth Engine. Aproveitando a mudança, foi adicionado suporte a shapefile
+  compactado em `.zip` como alternativa ao GeoJSON para o ponto de interesse (Seção 2), e um teste
+  de regressão estrutural contra o bug de aninhamento.
+- **Modo "raster inteiro" para GeoTIFF próprio (2026-07-06)**: até então, mesmo usando "Meu raster
+  (GeoTIFF)", o app sempre exigia o upload de um ponto de interesse (Seção 2) para recortar o
+  raster por buffer — não havia como calcular métricas para a área inteira de um raster próprio
+  sem também enviar um ponto. Agora, se o usuário escolher "Meu raster (GeoTIFF)" e **não** enviar
+  um ponto, o app calcula as métricas de paisagem para a extensão inteira do raster enviado (sem
+  recorte por ponto/buffer) — `extract_landscape_from_tif` ganhou um modo de leitura completa
+  (`point_lonlat`/`buffer_dist` agora opcionais), e a UI mostra um aviso indicando qual modo está
+  ativo. O caminho MapBiomas continua sempre exigindo um ponto (é um asset nacional, sem uma
+  "extensão inteira" delimitada). Coberto por 3 novos testes em `tests/test_app_tif.py`.
+- **Barra de progresso geral do pipeline (2026-07-06)**: antes, só a leitura do GeoTIFF tinha
+  indicador de progresso — as demais etapas (preparar ROI, conectar ao MapBiomas, calcular
+  métricas) só mostravam mensagens de texto sem indicar quanto faltava. Agora uma única barra
+  (`overall_progress`/`_set_stage` em [app.py](app.py)) acompanha o pipeline inteiro do clique em
+  "Calcular métricas" até o fim, com etapa + percentual juntos (ex.: "Conectando ao MapBiomas...
+  (30%)"), independente da fonte de dados escolhida.
+- **Revelação progressiva das métricas (2026-07-06)**: em vez de só "calculando métricas..."
+  seguido da tabela inteira de uma vez, cada métrica agora abre em seu próprio expander conforme é
+  computada (com um pequeno atraso entre uma e outra), tornando o acompanhamento mais didático —
+  o usuário vê o que cada métrica significa junto com o valor, não só uma tabela técnica ao final.
+  `METRICS_INFO` centraliza nome/ícone/tradução de cada métrica, reaproveitado também no expander
+  "Detalhamento das métricas" do rodapé (antes duplicado em duas listas separadas).
+- **Reprojeção automática de GeoTIFF em CRS geográfico (2026-07-06)**: antes, um raster próprio em
+  graus (WGS84) era rejeitado com um erro pedindo para o usuário reprojetar manualmente fora do
+  app. Agora `extract_landscape_from_tif` reprojeta automaticamente:
+  - **Com ponto de interesse**: recorta uma janela (com margem de segurança) ao redor do ponto
+    ainda em graus — bem mais barato que reprojetar o raster inteiro — e reprojeta só essa janela
+    para a zona UTM que contém o ponto (`_utm_epsg_for_lonlat`).
+  - **Modo raster inteiro (sem ponto)**: reprojeta para SIRGAS 2000/Brazil Polyconic (EPSG:5880),
+    pensada para minimizar distorção de área na extensão inteira do Brasil. Se o raster tiver mais
+    de `WHOLE_RASTER_MAX_PIXELS` (50 milhões), é reamostrado por moda (nunca interpolado — dado é
+    categórico) antes da reprojeção, para caber na memória do processo — motivado por um caso real
+    de teste com um raster de ~3,66 bilhões de pixels que exigiria dezenas de GB de RAM para o
+    PyLandStats calcular patches sem essa redução.
+  - A reprojeção sempre usa `Resampling.nearest` (nunca interpola valores de classe). O raster
+    final (já recortado/reprojetado) fica disponível para download na seção de resultados
+    (`st.download_button`), já que o container Docker não tem acesso ao sistema de arquivos do
+    host para salvar o arquivo convertido diretamente em disco.
+  - Coberto por novos testes em `tests/test_app_tif.py`, incluindo um teste direto de
+    `_utm_epsg_for_lonlat` contra zonas UTM conhecidas.
+- **Gráficos por métrica com Altair (2026-07-06)**: a revelação progressiva das métricas (item
+  acima) ganhou um gráfico de barras horizontal (Altair, com tooltip) por métrica, além da tabela —
+  cor `#2a78d6` validada pela paleta de referência da skill de dataviz do projeto (todos os checks
+  de contraste/CVD passam). `_render_metric_chart` em [app.py](app.py).
+- **Upload de múltiplos GeoTIFFs com comparação e relatório para impressão (2026-07-07)**: até
+  então, "Meu raster (GeoTIFF)" só aceitava um arquivo por vez. Agora o uploader da Seção 3 aceita
+  vários arquivos (`accept_multiple_files=True`), funcionando nos dois modos (ponto+buffer ou
+  raster inteiro):
+  - Cada arquivo passa pelo mesmo pipeline de extração/reprojeção/PyLandStats já existente
+    (`extract_landscape_from_tif` + `_compute_class_metrics`, esta última extraída da lógica que
+    antes só existia inline no caminho de arquivo único — sem mudança de comportamento nele).
+  - O ano de cada arquivo é identificado pelo nome (`_extract_year_from_filename`, regex `19xx`/
+    `20xx` — ex.: `Corte_255_2010.tif` → 2010) para ordenar e rotular a comparação como série
+    temporal; se algum arquivo não tiver um ano identificável, a ordem de upload é usada.
+  - Resultados: um resumo compacto por arquivo (plot + tabela, em `_render_multi_file_results`) e
+    uma seção de comparação com um gráfico de linha (matplotlib) por métrica — uma linha por classe
+    de cobertura do solo, cor fixa por classe (paleta categórica de 8 slots da skill de dataviz,
+    `CATEGORICAL_PALETTE`), limitado às classes de maior área média entre os arquivos.
+  - Botão "📥 Baixar relatório (HTML)" (`_build_html_report`) gera um HTML autocontido (tabelas +
+    gráficos comparativos embutidos como PNG em base64) para o usuário abrir no navegador e
+    imprimir/salvar como PDF (Ctrl+P) — evita adicionar uma biblioteca de geração de PDF nova à
+    imagem Docker.
+  - MapBiomas continua sempre single-source (não há múltiplos "arquivos" nesse caminho).
+  - Coberto por `tests/test_app_metrics.py` (extração de ano, cálculo compartilhado de métricas,
+    gráfico de comparação, conteúdo do relatório HTML).
+- **Progresso incremental real por métrica (2026-07-07)**: a barra geral do pipeline ficava
+  "parada" numa % durante o cálculo de métricas sem indicar o que estava acontecendo — medido via
+  benchmark: `euclidean_nearest_neighbor_mn` sozinha responde por ~97% do tempo total (12s de
+  12,7s num raster 3000×3000 com patches realistas), enquanto as outras 11 métricas somadas levam
+  ~0,4s. `_compute_class_metrics` agora calcula uma métrica por vez (sem custo extra relevante — o
+  PyLandStats reaproveita internamente os cálculos de patch já feitos no mesmo objeto `Landscape`
+  entre chamadas, confirmado por benchmark: 12,70s separado vs 13,21s numa única chamada), com um
+  callback `on_metric_progress` que atualiza a barra métrica a métrica e avisa especificamente
+  quando chega na métrica lenta.
+- **Métricas de área central e nível de paisagem (2026-07-07)**: comparado ao catálogo oficial do
+  FRAGSTATS (Área/Borda, Forma, Área Central, Contraste, Agregação, Diversidade — ver
+  [fragstats.org](https://fragstats.org/index.php/background/landscape-metrics)), o app só cobria
+  Área/Borda e Forma, tudo em nível de classe. Adicionado:
+  - **Área Central (Core Area)**, em `METRICS_INFO`: `patch_density`, `edge_density`,
+    `total_core_area`, `core_area_proportion_of_landscape`, `core_area_mn`, `core_area_index_mn`,
+    `number_of_disjunct_core_areas`, `disjunct_core_area_mn` — reaproveitam toda a UI genérica já
+    existente (revelação progressiva, gráfico, tabela, comparação entre arquivos, relatório HTML),
+    já que tudo é dirigido por essa lista.
+  - **Diversidade e Agregação em nível de PAISAGEM** (`LANDSCAPE_METRICS_INFO`,
+    `_compute_landscape_metrics`, `_render_landscape_metrics`): um valor único por arquivo (não por
+    classe), exibido como stat tiles — SHDI, CONTAG, MESH, PD, ED, LSI vêm do PyLandStats
+    (`compute_landscape_metrics_df`); SHEI, SIDI, SIEI e Riqueza de Manchas (PR) são calculadas
+    manualmente (fórmulas padrão do FRAGSTATS a partir das proporções de área por classe — sem
+    método dedicado equivalente no PyLandStats 3.1.0 instalado).
+  - **Fora do escopo, documentado explicitamente no app** (expander "Detalhamento das métricas") e
+    aqui: Aggregation Index (AI), Clumpiness Index (CLUMPY), Landscape Division Index (DIVISION) e
+    Splitting Index (SPLIT) não têm método equivalente no PyLandStats instalado. Interspersion &
+    Juxtaposition Index (IJI), Proximity Index e Contiguity Index existem como métodos em
+    `pls.Landscape` mas levantam `NotImplementedError` nesta versão — confirmado testando
+    diretamente antes de expor qualquer um deles na interface, em vez de assumir pela lista de
+    métodos disponíveis. Métricas de Contraste (ex.: TECI) exigiriam uma matriz de similaridade
+    entre classes configurada pelo usuário, não suportado pela UI atual.
+  - Coberto por novos testes em `tests/test_app_metrics.py` (fórmulas de diversidade manuais
+    conferidas contra o cálculo direto, renderização sem exceção).
+- **CSV das métricas de paisagem + resumo de onde encontrar resultados (2026-07-07)**: as métricas
+  de nível de paisagem (item acima) só apareciam na tela e no relatório HTML (modo multi-arquivo)
+  — sem exportação própria no fluxo de arquivo único. Adicionado um segundo botão "📥 Download CSV
+  (métricas de paisagem)" ao lado do CSV de métricas por classe já existente. Também adicionada ao
+  [README.md](README.md#-onde-encontrar-seus-resultados) uma tabela "📍 Onde encontrar seus
+  resultados" consolidando, para cada resultado calculado, onde ele aparece na tela, se persiste
+  entre interações (`st.session_state`) e como exportá-lo — antes essa informação estava espalhada
+  em várias seções do documento.
+- **Ordem das métricas por custo de dependência (2026-07-07)**: `euclidean_nearest_neighbor_mn`
+  (a métrica mais lenta, ~12,5s de ~12,7s totais no benchmark — depende da posição de TODOS os
+  patches da classe entre si) estava no MEIO de `METRICS_INFO`, obrigando o usuário a esperar por
+  ela antes de ver métricas rápidas que vinham depois (as 8 de área central, adicionadas em
+  2026-07-07 mais cedo). Reordenado em três blocos, do mais barato ao mais caro: Área/Densidade/
+  Forma (quase instantâneas, ~0-0,4s cada) → Área Central (custo próprio moderado, ~0,5-0,7s cada
+  — erosão de borda) → Isolamento (`euclidean_nearest_neighbor_mn`, sempre por último). Com isso o
+  usuário vê a maioria das métricas quase de imediato, em vez da mais lenta travando o meio da
+  revelação progressiva.
+- **Arquivos temporários retidos até o lote inteiro terminar, no modo multi-arquivo (2026-07-07)**:
+  antes, cada GeoTIFF do lote tinha seu arquivo temporário apagado logo após a própria extração
+  (dentro do `finally` de `extract_landscape_from_tif`), mesmo que os outros arquivos do lote ainda
+  estivessem sendo processados. `extract_landscape_from_tif` ganhou os parâmetros `cleanup` (padrão
+  `True`, comportamento inalterado no caminho de arquivo único/MapBiomas) e `temp_path_out` (lista
+  onde o caminho do arquivo é anexado quando `cleanup=False`). O loop de múltiplos arquivos agora
+  passa `cleanup=False` e só apaga todos os temporários do lote num único `finally` ao redor do
+  loop inteiro, depois que as métricas de TODOS os arquivos (não só a extração) foram calculadas —
+  inclusive se algum arquivo do meio do lote falhar. Coberto por novo teste em `tests/test_app_tif.py`.
+- **Quantidade de métricas explícita na interface (2026-07-07)**: antes as mensagens de progresso
+  diziam só "calculando métricas...", sem indicar quantas. Agora aparecem contagens explícitas em
+  todo o fluxo — ex.: "Calculando 20 métricas por classe + 10 métricas de nível de paisagem (30 no
+  total)...", "Calculando (3/20): ...", cabeçalho "🌎 Métricas da paisagem (nível global) — 10/10:".
 
 ### 🔄 Mudança de arquitetura (2026-07-04): login por e-mail/senha + JWT, com Google OAuth opcional
 

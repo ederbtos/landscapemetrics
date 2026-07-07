@@ -2,23 +2,27 @@
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Progresso](https://img.shields.io/badge/roadmap-93%2C75%25-yellow.svg)
+![Progresso](https://img.shields.io/badge/roadmap-95%25-yellow.svg)
 
 > ℹ️ O link de demo online desta versão foi removido: a arquitetura de login e
 > credenciais por usuário mudou (veja [ROADMAP.md](ROADMAP.md)) e a Fase 4
 > (deploy público com HTTPS) ainda está pendente de execução. Por enquanto,
 > rode localmente ou via Docker — veja [🔧 Instalação](#-instalação).
 >
-> **Progresso: 93,75%** — Fases 1-3 (landing page, login, credenciais por
-> usuário) concluídas; Fase 4 (deploy) está totalmente automatizada em
-> [scripts/deploy.sh](scripts/deploy.sh), faltando só a decisão de
-> servidor/domínio e a execução. Detalhamento por fase em
-> [ROADMAP.md](ROADMAP.md#progresso-geral-9375).
+> **Progresso: 95%** — Fases 1-3 (landing page, login, credenciais por
+> usuário) e Fase 5 (motor de métricas de paisagem: MapBiomas + GeoTIFF
+> próprio, um ou vários arquivos, reprojeção automática, métricas de
+> classe + paisagem do FRAGSTATS) concluídas; Fase 4 (deploy) está
+> totalmente automatizada em [scripts/deploy.sh](scripts/deploy.sh),
+> faltando só a decisão de servidor/domínio e a execução. Detalhamento por
+> fase em [ROADMAP.md](ROADMAP.md#progresso-geral-95).
 
 **Aplicativo Web para extração de métricas de paisagem de pontos de interesse a partir da base de dados do MapBiomas**
 
 Desenvolvido por [Pedro Higuchi](https://twitter.com/pe_hi) | Contato: higuchip@gmail.com
-
+Contribuições: 
+            [Eder Silva] | Contato: eder.silva@unievangelica.edu.br
+            [Jeferson Araujo] | Contato: jeferson.araujo@unievangelica.edu.br
 ---
 
 ## 📖 Descrição
@@ -33,8 +37,11 @@ Cada usuário faz login (por e-mail/senha ou, opcionalmente, com Google) e cadas
 - **🔒 Credenciais por usuário**: cada usuário cadastra e usa sua própria conta de serviço do Earth Engine, guardada criptografada
 - **📍 Seleção Interativa**: Interface com mapas para seleção de pontos de interesse
 - **🛰️ Dados MapBiomas**: acesso à collection mais recente disponível (com fallback automático para collections anteriores)
-- **📤 GeoTIFF próprio (opcional)**: alternativa ao MapBiomas/Earth Engine — envie seu próprio raster de cobertura do solo (até 5GB, CRS projetado, códigos de classe MapBiomas) e o app recorta a área do buffer automaticamente
-- **🧮 Cálculo sob demanda**: o processamento só roda quando você clica em "Calcular métricas", com cada etapa visível em tempo real (não recalcula sozinho a cada interação com a página)
+- **📤 GeoTIFF próprio (opcional)**: alternativa ao MapBiomas/Earth Engine — envie seu próprio raster de cobertura do solo (até 5GB, códigos de classe MapBiomas). Se você também enviar um ponto de interesse, o app recorta a área do buffer automaticamente; se enviar **só o raster**, calcula as métricas para a extensão **inteira** do arquivo
+- **🧭 Reprojeção automática**: se o GeoTIFF enviado estiver em coordenadas geográficas (graus), o app reprojeta automaticamente (zona UTM do ponto, ou SIRGAS 2000/Brazil Polyconic no modo raster inteiro) — não precisa reprojetar manualmente antes de enviar. O raster convertido fica disponível para download
+- **🧮 Cálculo sob demanda**: o processamento só roda quando você clica em "Calcular métricas", com cada etapa visível em tempo real e uma barra de progresso única (etapa + %) do início ao fim — não recalcula sozinho a cada interação com a página
+- **✨ Métricas reveladas uma a uma**: cada métrica de paisagem aparece em sua própria seção conforme é calculada, com gráfico de barras interativo (por classe) + tabela, em vez de só uma tabela técnica ao final
+- **📚 Múltiplos GeoTIFFs comparados**: envie mais de um raster próprio (ex.: anos diferentes da mesma área) — cada um é processado separadamente e comparado num gráfico por métrica (ano identificado pelo nome do arquivo, quando presente), com um relatório HTML para baixar, abrir no navegador e imprimir/salvar como PDF
 - **📊 Análise Robusta**: Cálculo de 12+ métricas de paisagem diferentes
 - **📥 Exportação**: Download dos resultados em formato CSV
 - **🗺️ Visualização**: Mapas interativos e gráficos das classes de uso do solo
@@ -174,20 +181,25 @@ atualizado depois no expander "🔑 Atualizar credenciais do Earth Engine").
 
 #### **Passo 2: Upload do Arquivo**
 
-- Faça upload do arquivo GeoJSON exportado
-- Limite: 10MB, apenas arquivos .geojson
+- Faça upload do ponto de interesse: GeoJSON exportado do mapa acima, ou um shapefile do ponto compactado em `.zip` (`.shp`+`.shx`+`.dbf`+`.prj`)
+- Limite: 10MB
+- **Obrigatório** se a fonte de dados (Passo 3) for MapBiomas. Se a fonte for seu próprio GeoTIFF, esse upload é **opcional** — veja "modo raster inteiro" abaixo
 
 #### **Passo 3: Fonte dos dados de cobertura do solo**
 
 Escolha entre:
 
-- **MapBiomas (Google Earth Engine)**: padrão, usa a collection mais recente disponível (ver [🌍 Classes MapBiomas Suportadas](#-classes-mapbiomas-suportadas))
-- **Meu raster (GeoTIFF)**: envie seu próprio raster de cobertura do solo (limite 5GB). Requisitos:
-  - CRS **projetado** (ex.: UTM), não geográfico (graus) — o buffer é definido em metros
+- **MapBiomas (Google Earth Engine)**: padrão, usa a collection mais recente disponível (ver [🌍 Classes MapBiomas Suportadas](#-classes-mapbiomas-suportadas)). Sempre exige o ponto do Passo 2 (é um asset nacional, sem uma "extensão inteira" delimitada)
+- **Meu raster (GeoTIFF)**: envie um ou **vários** rasters de cobertura do solo (limite 5GB cada). Requisitos:
   - Mesmos códigos de classe do MapBiomas (1=Floresta, 15=Pastagem etc.)
-  - Pode cobrir uma área bem maior que o buffer: o app recorta automaticamente a região ao redor do ponto selecionado
+  - CRS qualquer: se estiver em coordenadas geográficas (graus), o app reprojeta **automaticamente** antes de calcular (zona UTM do ponto, ou SIRGAS 2000/Brazil Polyconic no modo raster inteiro) — não precisa reprojetar manualmente antes de enviar. O arquivo convertido fica disponível para download na seção de resultados
+  - **Com ponto enviado no Passo 2**: pode cobrir uma área bem maior que o buffer — o app recorta automaticamente a região ao redor do ponto selecionado
+  - **Sem ponto enviado no Passo 2 (modo raster inteiro)**: o app calcula as métricas para a extensão **inteira** do raster, sem recorte — útil quando o próprio arquivo já é a área de interesse
+  - **Mais de um arquivo enviado**: cada um é processado separadamente e comparado ao final — se o nome do arquivo tiver um ano (ex.: `Corte_255_2010.tif`), a comparação vira uma série temporal; senão, usa a ordem de upload
 
 #### **Passo 4: Configuração do Buffer**
+
+> Só aparece se você enviou um ponto de interesse no Passo 2. No modo raster inteiro (GeoTIFF sem ponto), esta etapa é pulada.
 
 - Ajuste o raio do buffer (1.000-10.000m)
 - Buffer maior = área de análise maior
@@ -200,10 +212,18 @@ Escolha entre:
 
 ### 3. Visualize os Resultados
 
-- **Mapa da área**: Visualização do buffer aplicado
+**Um arquivo (ou MapBiomas):**
+
+- **Mapa da área**: Visualização do buffer aplicado (não aparece no modo raster inteiro, já que não há um ponto/buffer para mostrar)
 - **Classes de uso**: Gráfico das classes encontradas
-- **Métricas detalhadas**: Tabela com 12+ métricas
-- **Download**: Arquivo CSV formatado
+- **Métricas detalhadas**: cada métrica aparece em sua própria seção conforme é calculada, com gráfico de barras por classe + tabela, além da tabela consolidada com 12+ métricas
+- **Download**: CSV das métricas e, se o GeoTIFF enviado precisou ser reprojetado automaticamente, também o raster convertido
+
+**Vários arquivos (GeoTIFF):**
+
+- Um resumo compacto por arquivo (mapa de classes + tabela), em painéis expansíveis
+- Uma seção de **comparação entre arquivos**: um gráfico de linha por métrica, uma cor por classe de cobertura do solo, no eixo X o ano (ou a ordem de upload)
+- Botão **"📥 Baixar relatório (HTML)"**: um arquivo autocontido com o resumo de cada arquivo e os gráficos comparativos — abra no navegador e use **Ctrl+P** para salvar como PDF
 
 > ⚠️ Se a extração de dados reais do MapBiomas/Earth Engine falhar (ex.: buffer
 > muito pequeno ou região sem cobertura no asset), o processamento é
@@ -212,21 +232,70 @@ Escolha entre:
 
 ---
 
+## 📍 Onde encontrar seus resultados
+
+Resumo de cada resultado calculado, onde ele aparece na tela e como levá-lo pra fora do app. Tudo que fica marcado como "sim" em **Persiste?** continua visível mesmo depois de clicar em outros botões da página (ex.: um download) — o app guarda o resultado em `st.session_state` em vez de recalcular a cada interação do Streamlit.
+
+| Resultado | Onde aparece na tela | Persiste? | Como exportar |
+|---|---|---|---|
+| Métrica por classe, uma a uma (gráfico + tabela) | Durante o cálculo, um expander por métrica (revelação progressiva) | Não — é o acompanhamento em tempo real do processamento | Os mesmos valores estão na tabela consolidada abaixo |
+| Tabela consolidada de métricas por classe (12+ métricas) | Seção "📈 Métricas da paisagem", logo abaixo do mapa/gráfico de classes | Sim | Botão **"📥 Download CSV"** |
+| Métricas de nível de paisagem (SHDI, CONTAG, MESH, PD, ED, LSI, SHEI, SIDI, SIEI, PR) | Cards ("🌎 Métricas da paisagem — nível global") logo após a tabela consolidada | Sim | Botão **"📥 Download CSV (métricas de paisagem)"** |
+| Mapa da área de interesse (ponto + buffer) | Coluna esquerda, junto do gráfico de classes (não aparece no modo raster inteiro) | Sim | — (visual; sem export próprio) |
+| Gráfico das classes de cobertura do solo | Coluna direita, junto do mapa da área | Sim | — (visual; sem export próprio) |
+| GeoTIFF reprojetado automaticamente (quando o arquivo enviado estava em graus) | Logo abaixo da tabela consolidada, com uma explicação do porquê | Sim | Botão **"📥 Download GeoTIFF reprojetado"** |
+| Resumo por arquivo (modo **multi-arquivo**: 2+ GeoTIFFs) | Um expander por arquivo — mapa + tabela + cards de paisagem | Sim | Incluído no relatório HTML (linha abaixo) |
+| Comparação entre arquivos (modo multi-arquivo) | Seção "📊 Comparação entre arquivos", um gráfico por métrica, uma cor por classe | Sim | Incluído no relatório HTML (linha abaixo) |
+| Relatório completo do modo multi-arquivo | — | — | Botão **"📥 Baixar relatório (HTML)"** — abra no navegador e use **Ctrl+P** pra salvar como PDF |
+
+> Tudo isso passa a existir só depois de clicar em **"🧮 Calcular métricas"** (Seção 5) — nada é calculado automaticamente antes disso.
+
+---
+
 ## 📊 Métricas Calculadas
+
+Organizadas conforme as categorias do [FRAGSTATS](https://fragstats.org/index.php/background/landscape-metrics) — ver o expander "📊 Detalhamento das métricas" no rodapé do app para a lista completa e o que fica de fora (e por quê).
+
+### Por classe (uma linha por classe de cobertura do solo)
 
 | Métrica | Descrição | Unidade |
 |---------|-----------|---------|
 | `total_area` | Área total da classe | ha |
 | `proportion_of_landscape` | Proporção na paisagem | % |
 | `number_of_patches` | Número de manchas | - |
+| `patch_density` | Densidade de manchas | manchas/100ha |
 | `largest_patch_index` | Índice da maior mancha | % |
 | `total_edge` | Total de bordas | m |
+| `edge_density` | Densidade de borda | m/ha |
 | `landscape_shape_index` | Índice de forma da paisagem | - |
 | `area_mn` | Área média das manchas | ha |
 | `perimeter_mn` | Perímetro médio | m |
 | `shape_index_mn` | Índice de forma médio | - |
 | `fractal_dimension_mn` | Dimensão fractal média | - |
 | `euclidean_nearest_neighbor_mn` | Distância média ao vizinho mais próximo | m |
+| `total_core_area` | Área central total (Core Area) | ha |
+| `core_area_proportion_of_landscape` | Proporção de área central na paisagem | % |
+| `core_area_mn` | Área central média por mancha | ha |
+| `core_area_index_mn` | Índice médio de área central | % |
+| `number_of_disjunct_core_areas` | Número de áreas centrais disjuntas | - |
+| `disjunct_core_area_mn` | Área central disjunta média | ha |
+
+### Nível de paisagem (um único valor global, exibido como cards no app)
+
+| Métrica | Descrição |
+|---------|-----------|
+| SHDI | Índice de Diversidade de Shannon |
+| SHEI | Uniformidade de Shannon |
+| SIDI | Índice de Diversidade de Simpson |
+| SIEI | Uniformidade de Simpson |
+| PR | Riqueza de Manchas (nº de classes presentes) |
+| CONTAG | Contágio |
+| MESH | Tamanho Efetivo de Malha |
+| PD | Densidade de Manchas (nível de paisagem) |
+| ED | Densidade de Borda (nível de paisagem) |
+| LSI | Índice de Forma da Paisagem (nível de paisagem) |
+
+> **Fora do escopo por ora**: Aggregation Index (AI), Clumpiness Index (CLUMPY), Landscape Division Index (DIVISION) e Splitting Index (SPLIT) não têm método equivalente na versão do PyLandStats usada neste projeto. Interspersion & Juxtaposition Index (IJI), Proximity Index e Contiguity Index existem como métodos na biblioteca mas não estão implementados nela (retornam erro). Métricas de Contraste (ex.: TECI) exigiriam uma matriz de similaridade entre classes configurada pelo usuário, não suportada pela interface atual.
 
 ---
 
@@ -263,8 +332,8 @@ landscapemetrics/
 
 - ✅ **Login obrigatório**: acesso à ferramenta só após autenticação (e-mail/senha com hash bcrypt + JWT, ou Google OAuth quando configurado)
 - ✅ **Credenciais isoladas por usuário**: cada usuário só acessa a própria conta de serviço do Earth Engine, cifrada em repouso (Fernet) em `data/app.db`
-- ✅ **Tamanho de arquivo**: Máximo 10MB
-- ✅ **Tipos permitidos**: Apenas .geojson
+- ✅ **Tamanho de arquivo**: Máximo 10MB (ponto) / 5GB (GeoTIFF)
+- ✅ **Tipos permitidos**: `.geojson` ou shapefile compactado em `.zip` para o ponto; `.tif`/`.tiff` para o raster próprio
 - ✅ **Sanitização**: Nomes de arquivo e caminhos
 - ✅ **Path traversal**: Proteção contra ataques
 - ✅ **Sem dados fictícios**: se a extração real do MapBiomas/Earth Engine falhar, o processamento é interrompido em vez de gerar métricas a partir de dados de exemplo
@@ -320,17 +389,19 @@ landscapemetrics/
 
 #### 4. Erros ao usar "Meu raster (GeoTIFF)"
 
-```text
-❌ O GeoTIFF precisa estar em uma projeção métrica (ex.: UTM)
-```
-
-**Solução**: reprojete o raster para um CRS projetado (ex.: a zona UTM correspondente) antes de enviar — um CRS geográfico (graus) tornaria o buffer em metros incorreto.
+> Se o seu GeoTIFF estiver em coordenadas geográficas (graus), o app reprojeta automaticamente — você não precisa mais reprojetar manualmente antes de enviar nem verá um erro só por causa disso.
 
 ```text
 ❌ A área do buffer não intersecta o raster enviado.
 ```
 
-**Solução**: confirme que o ponto selecionado está dentro da área coberta pelo raster, ou aumente o buffer.
+**Solução**: confirme que o ponto selecionado está dentro da área coberta pelo raster, ou aumente o buffer. (Esse erro só ocorre com ponto enviado — no modo raster inteiro, sem ponto, ele não se aplica.)
+
+```text
+❌ Nenhum pixel válido encontrado no raster enviado — o arquivo parece conter apenas valores nodata.
+```
+
+**Solução**: erro do modo raster inteiro (GeoTIFF enviado sem ponto de interesse) — confirme que o arquivo realmente contém dados de classificação e não só nodata.
 
 ### Logs e Debug
 

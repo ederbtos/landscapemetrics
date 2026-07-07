@@ -21,6 +21,14 @@ import app
 
 
 def test_metrics_ready_assignment_is_not_nested_inside_geotiff_only_branch():
+    # Desde a introdução do modo multi-arquivo (2026-07-07), existe um segundo
+    # ponto legítimo de `metrics_ready = True` (o loop de múltiplos GeoTIFFs,
+    # que não passa pelo if/else de `data_source` — ele já sabe que a fonte é
+    # "Meu raster"). Por isso, em vez de checar só a PRIMEIRA ocorrência,
+    # verifica-se que PELO MENOS UMA ocorrência de `metrics_ready = True` vem
+    # depois do if/else de `data_source` e não está aninhada dentro dele —
+    # essa é a ocorrência alcançável pelo caminho de fonte única (MapBiomas ou
+    # um só GeoTIFF), que é o que o bug original quebrava.
     source = inspect.getsource(app.main)
     lines = source.splitlines()
 
@@ -29,14 +37,18 @@ def test_metrics_ready_assignment_is_not_nested_inside_geotiff_only_branch():
     )
     if_indent = len(lines[if_idx]) - len(lines[if_idx].lstrip(" "))
 
-    ready_idx = next(
+    ready_indices = [
         i for i, line in enumerate(lines) if 'session_state["metrics_ready"] = True' in line
-    )
-    ready_indent = len(lines[ready_idx]) - len(lines[ready_idx].lstrip(" "))
+    ]
+    assert ready_indices, "session_state['metrics_ready'] = True não encontrado em app.main"
 
-    assert ready_idx > if_idx, "session_state['metrics_ready'] deveria vir depois do if/else de data_source"
-    assert ready_indent <= if_indent, (
-        "session_state['metrics_ready'] = True parece aninhado dentro do if/else de "
-        "data_source — isso reproduz o bug em que escolher MapBiomas nunca chega a "
-        "calcular/exibir as métricas (só funcionava para o GeoTIFF próprio)."
+    reachable_after_if_else = [
+        i for i in ready_indices
+        if i > if_idx and (len(lines[i]) - len(lines[i].lstrip(" "))) <= if_indent
+    ]
+    assert reachable_after_if_else, (
+        "Nenhuma atribuição de session_state['metrics_ready'] = True vem depois do "
+        "if/else de data_source na indentação correta — isso reproduz o bug em que "
+        "escolher MapBiomas nunca chega a calcular/exibir as métricas (só funcionava "
+        "para o GeoTIFF próprio)."
     )
