@@ -90,7 +90,11 @@ from rasterio.windows import Window, from_bounds, transform as window_transform
 from rasterio.features import geometry_mask
 from affine import Affine
 from pyproj import Transformer
-from shapely.geometry import Point, mapping
+from shapely.geometry import Point, mapping, shape
+from shapely.ops import transform as shapely_transform
+import requests
+from scipy.linalg import fractional_matrix_power
+from scipy.ndimage import zoom as ndimage_zoom
 import tempfile
 import os
 import io
@@ -398,6 +402,100 @@ def uploaded_file_to_gdf(data):
         raise
 
 
+IBGE_LOCALIDADES_BASE = "https://servicodados.ibge.gov.br/api/v1/localidades"
+IBGE_MALHAS_BASE = "https://servicodados.ibge.gov.br/api/v3/malhas"
+IBGE_AGREGADOS_BASE = "https://servicodados.ibge.gov.br/api/v3/agregados"
+IBGE_REQUEST_TIMEOUT = 15  # segundos — evita travar a UI indefinidamente se a API do IBGE ficar lenta/indisponível
+
+
+@st.cache_data(ttl=24 * 3600)
+def _ibge_get_ufs() -> list[dict]:
+    """Lista as 27 UFs (nome + sigla) para popular o seletor de estado do
+    modo 'Limite municipal (IBGE)'. Cache de 24h — a lista de UFs não muda
+    na prática, então não vale a pena rebuscar a cada sessão."""
+    resp = requests.get(
+        f"{IBGE_LOCALIDADES_BASE}/estados", params={"orderBy": "nome"},
+        timeout=IBGE_REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+@st.cache_data(ttl=24 * 3600)
+def _ibge_get_municipios(uf_sigla: str) -> list[dict]:
+    """Lista os municípios de uma UF (nome + código IBGE de 7 dígitos) para
+    popular o segundo seletor do modo município, depois que o usuário
+    escolhe a UF no primeiro."""
+    resp = requests.get(
+        f"{IBGE_LOCALIDADES_BASE}/estados/{uf_sigla}/municipios",
+        timeout=IBGE_REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+@st.cache_data(ttl=24 * 3600)
+def _ibge_get_municipio_geojson(codigo: str) -> dict | None:
+    """Busca o polígono (GeoJSON, EPSG:4326) do limite do município na malha
+    territorial do IBGE — usado como área de interesse alternativa ao
+    ponto+buffer. `qualidade=minima` mantém o payload pequeno (suficiente
+    para recorte de raster/consulta ao Earth Engine, não para cartografia de
+    precisão).
+
+    Segue a mesma regra do resto do app: se a API falhar, retorna `None` em
+    vez de inventar uma geometria — o chamador interrompe o fluxo com uma
+    mensagem explicando a causa, nunca segue adiante com um limite
+    fabricado."""
+    try:
+        resp = requests.get(
+            f"{IBGE_MALHAS_BASE}/municipios/{codigo}",
+            params={"formato": "application/vnd.geo+json", "qualidade": "minima"},
+            timeout=IBGE_REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        geojson = resp.json()
+    except (requests.RequestException, ValueError) as ibge_error:
+        logger.warning(f"Falha ao buscar malha municipal do IBGE (código {codigo}): {ibge_error}")
+        return None
+
+    if not geojson.get("features"):
+        return None
+    return geojson
+
+
+@st.cache_data(ttl=24 * 3600)
+def _ibge_get_populacao_estimada(codigo: str) -> int | None:
+    """Melhor esforço: população estimada mais recente (agregado SIDRA 6579,
+    variável 9324) para o município — enriquecimento opcional da matriz
+    socioecológica (ver `_build_sse_matrix`), nunca bloqueia o resto do
+    fluxo. Retorna `None` silenciosamente em qualquer falha (rede, formato
+    inesperado da resposta, município sem estimativa publicada)."""
+    try:
+        resp = requests.get(
+            f"{IBGE_AGREGADOS_BASE}/6579/periodos/-1/variaveis/9324",
+            params={"localidades": f"N6[{codigo}]"},
+            timeout=IBGE_REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        valor = data[0]["resultados"][0]["series"][0]["serie"]
+        (populacao_str,) = valor.values()
+        return int(populacao_str)
+    except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as pop_error:
+        logger.warning(f"Falha ao buscar população estimada do IBGE (código {codigo}): {pop_error}")
+        return None
+
+
+def _municipio_geometry_shapely(municipio_geojson: dict):
+    """Extrai a geometria (Shapely, EPSG:4326) da(s) feature(s) retornada(s)
+    pela malha do IBGE — normalmente uma única feature por município, mas
+    combina via `unary_union` se vier mais de uma (defensivo)."""
+    from shapely.ops import unary_union
+
+    geoms = [shape(feat["geometry"]) for feat in municipio_geojson["features"]]
+    return geoms[0] if len(geoms) == 1 else unary_union(geoms)
+
+
 WHOLE_RASTER_MAX_PIXELS = 50_000_000  # acima disso, reamostra por moda antes de reprojetar (cabe na memória do processo)
 
 
@@ -455,17 +553,22 @@ def _crop_and_mask_array(array, transform, geometry, nodata):
 
 def extract_landscape_from_tif(
     uploaded_tif, point_lonlat=None, buffer_dist=None, on_progress=None,
-    cleanup=True, temp_path_out=None,
+    cleanup=True, temp_path_out=None, region_geojson=None,
 ):
     """
     Extrai as classes de cobertura do solo do GeoTIFF enviado pelo usuário —
     alternativa a extrair os mesmos dados via MapBiomas/Earth Engine (ver
-    seção "Fonte dos dados" em app.py). Dois modos, conforme os argumentos:
+    seção "Fonte dos dados" em app.py). Três modos, conforme os argumentos:
 
     - `point_lonlat` e `buffer_dist` informados: recorta apenas a área do
       buffer (ponto + raio em metros) ao redor do ponto de interesse.
+    - `region_geojson` informado (GeoJSON EPSG:4326, ver
+      `_ibge_get_municipio_geojson`): recorta pela geometria exata (ex.:
+      limite municipal), em vez de um buffer circular. Mutuamente exclusivo
+      com `point_lonlat`/`buffer_dist` — o chamador escolhe um dos dois.
     - Nenhum dos dois informado: lê o raster inteiro, sem recorte — usado
-      quando o usuário sobe só o GeoTIFF, sem enviar um ponto de interesse.
+      quando o usuário sobe só o GeoTIFF, sem enviar um ponto/município de
+      interesse.
 
     Se o GeoTIFF estiver em CRS geográfico (graus), é reprojetado
     automaticamente antes da extração — nunca exige que o usuário reprojete
@@ -497,6 +600,10 @@ def extract_landscape_from_tif(
     def _report(fraction, label):
         if on_progress:
             on_progress(fraction, label)
+
+    has_point_region = point_lonlat is not None and buffer_dist is not None
+    has_municipio_region = region_geojson is not None
+    municipio_geom_wgs84 = _municipio_geometry_shapely(region_geojson) if has_municipio_region else None
 
     is_valid, message = validate_file_upload(uploaded_tif, ALLOWED_TIF_EXTENSIONS, MAX_TIF_SIZE)
     if not is_valid:
@@ -539,7 +646,7 @@ def extract_landscape_from_tif(
             if src.crs.is_geographic:
                 reprojected = True
 
-                if point_lonlat is not None and buffer_dist is not None:
+                if has_point_region:
                     # Recorta uma janela generosa ao redor do ponto AINDA em
                     # graus — bem mais barato que reprojetar o raster
                     # inteiro para só depois recortar um pedaço pequeno.
@@ -560,6 +667,30 @@ def extract_landscape_from_tif(
                     src_array = src.read(1, window=window)
                     src_transform = window_transform(window, src.transform)
                     dst_crs = f"EPSG:{_utm_epsg_for_lonlat(lon, lat)}"
+                elif has_municipio_region:
+                    # Mesma ideia do ponto: recorta uma janela (bbox do
+                    # município + margem) AINDA em graus antes de reprojetar,
+                    # em vez de reprojetar o raster inteiro. A zona UTM usada
+                    # é a do centróide do município — aproximação aceitável
+                    # mesmo para municípios que cruzem duas zonas (o próprio
+                    # modo ponto já faz a mesma simplificação para buffers
+                    # grandes).
+                    _report(0.60, "CRS geográfico detectado — recortando janela ao redor do município...")
+                    min_lon, min_lat, max_lon, max_lat = municipio_geom_wgs84.bounds
+                    margin_deg = 0.02  # ~2km de margem de segurança para a reprojeção não faltar pixel na borda
+                    window = from_bounds(
+                        min_lon - margin_deg, min_lat - margin_deg,
+                        max_lon + margin_deg, max_lat + margin_deg,
+                        transform=src.transform,
+                    ).round_lengths().round_offsets()
+                    window = window.intersection(Window(0, 0, src.width, src.height))
+                    if window.width <= 0 or window.height <= 0:
+                        raise ValueError("O município selecionado está fora da extensão do raster enviado.")
+
+                    src_array = src.read(1, window=window)
+                    src_transform = window_transform(window, src.transform)
+                    centroid = municipio_geom_wgs84.centroid
+                    dst_crs = f"EPSG:{_utm_epsg_for_lonlat(centroid.x, centroid.y)}"
                 else:
                     # Modo raster inteiro: reamostra por moda antes de
                     # reprojetar se for grande demais para caber na memória
@@ -613,19 +744,24 @@ def extract_landscape_from_tif(
                 nodata_value = 0
                 resolution = (abs(dst_transform.a), abs(dst_transform.e))
 
-                if point_lonlat is not None and buffer_dist is not None:
+                if has_point_region:
                     _report(0.85, "Recortando a área do buffer (pós-reprojeção)...")
                     transformer = Transformer.from_crs("EPSG:4326", dst_crs, always_xy=True)
                     x, y = transformer.transform(lon, lat)
                     buffer_geom = Point(x, y).buffer(buffer_dist)
                     array, out_transform = _crop_and_mask_array(array, out_transform, buffer_geom, nodata_value)
+                elif has_municipio_region:
+                    _report(0.85, "Recortando o limite municipal (pós-reprojeção)...")
+                    transformer = Transformer.from_crs("EPSG:4326", dst_crs, always_xy=True)
+                    municipio_geom_dst = shapely_transform(transformer.transform, municipio_geom_wgs84)
+                    array, out_transform = _crop_and_mask_array(array, out_transform, municipio_geom_dst, nodata_value)
             else:
                 # Já em CRS projetado — comportamento original preservado.
                 nodata_value = src_nodata
                 out_crs = src.crs
                 resolution = (abs(src.res[0]), abs(src.res[1]))
 
-                if point_lonlat is not None and buffer_dist is not None:
+                if has_point_region:
                     transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
                     x, y = transformer.transform(point_lonlat[0], point_lonlat[1])
                     buffer_geom = Point(x, y).buffer(buffer_dist)
@@ -635,6 +771,18 @@ def extract_landscape_from_tif(
                         out_image, out_transform = rio_mask(src, [mapping(buffer_geom)], crop=True, nodata=nodata_value)
                     except ValueError as mask_error:
                         raise ValueError("A área do buffer não intersecta o raster enviado.") from mask_error
+                    array = out_image[0]
+                elif has_municipio_region:
+                    transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+                    municipio_geom_dst = shapely_transform(transformer.transform, municipio_geom_wgs84)
+
+                    _report(0.8, "Recortando o limite municipal...")
+                    try:
+                        out_image, out_transform = rio_mask(
+                            src, [mapping(municipio_geom_dst)], crop=True, nodata=nodata_value
+                        )
+                    except ValueError as mask_error:
+                        raise ValueError("O limite municipal não intersecta o raster enviado.") from mask_error
                     array = out_image[0]
                 else:
                     _report(0.8, "Lendo o raster completo...")
@@ -646,7 +794,9 @@ def extract_landscape_from_tif(
                 "Nenhum pixel válido encontrado no raster enviado "
                 + ("dentro da área do buffer. Aumente o buffer, escolha outro ponto, ou "
                    "confirme que o raster cobre essa área."
-                   if point_lonlat is not None else
+                   if has_point_region else
+                   "dentro do limite municipal. Confirme que o raster cobre essa região."
+                   if has_municipio_region else
                    "— o arquivo parece conter apenas valores nodata.")
             )
 
@@ -668,6 +818,20 @@ def extract_landscape_from_tif(
 
 
 METRIC_CHART_COLOR = "#2a78d6"  # azul — paleta validada (skill de dataviz), série única por gráfico
+
+
+def _section_header(text: str, level: int = 5) -> None:
+    """Cabeçalho de seção com um destaque sutil (borda colorida à esquerda),
+    sem cor de texto/fundo fixa — substitui o padrão anterior de `st.markdown`
+    com `background-color:yellow`/`lightgreen` + `color:black` hardcoded, que
+    ficava ilegível/destoante no tema escuro do Streamlit (o bloco continuava
+    claro mesmo com o resto da UI em tema escuro). Herda a cor de texto do
+    tema ativo do usuário."""
+    tag = f"h{level}"
+    st.markdown(
+        f'<{tag} style="border-left: 4px solid {METRIC_CHART_COLOR}; padding-left: 0.6em; margin: 0.5em 0;">{text}</{tag}>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_metric_chart(values: "pd.Series", metric_label: str):
@@ -700,39 +864,15 @@ def _render_metric_chart(values: "pd.Series", metric_label: str):
         labelLimit=300
     )
 
-    st.markdown(f"""
-    **Análise Detalhada:**
-    
-    A métrica apresentada desempenha um papel fundamental na compreensão da estrutura espacial e da ecologia da paisagem analisada.
-    Neste contexto, podemos observar a distribuição dos valores para cada classe de cobertura do solo mapeada na região de estudo.
-    A análise cuidadosa destes padrões permite identificar quais classes dominam a paisagem em termos de área, fragmentação ou isolamento,
-    dependendo da métrica específica sendo avaliada. Em estudos ecológicos, métricas de composição (como área e proporção)
-    ajudam a entender a disponibilidade de habitat, enquanto métricas de configuração (como densidade de borda e isolamento)
-    fornecem insights sobre a conectividade e os possíveis efeitos de borda sobre a biodiversidade local.
-    É importante considerar o contexto histórico e as pressões antrópicas que podem ter moldado esta configuração atual da paisagem.
-    Alterações contínuas, como desmatamento ou expansão urbana, frequentemente se refletem em mudanças abruptas nestas métricas espaciais,
-    aumentando a fragmentação estrutural e reduzindo a viabilidade de populações de espécies especialistas.
-    Portanto, os resultados quantitativos aqui apresentados servem como base sólida e metodológica para subsidiar estratégias de conservação,
-    planejamento territorial e tomadas de decisão voltadas para a sustentabilidade e o manejo adequado dos recursos naturais na bacia ou região de interesse.
-    """)
-
     st.altair_chart(chart, use_container_width=True)
 
-    st.markdown(f"""
-    **Considerações Finais sobre a Métrica:**
-    
-    Observando os resultados consolidados no gráfico acima, evidencia-se a heterogeneidade inerente à paisagem estudada.
-    Cada barra representa o valor calculado para a respectiva classe, permitindo uma comparação visual direta de sua representatividade e estado estrutural.
-    Classes com valores extremos frequentemente indicam elementos de destaque na paisagem, seja por sua dominância como matriz ou por sua alta vulnerabilidade devido à intensa fragmentação.
-    A interpretação ecológica contínua desses dados sugere que a matriz da paisagem e seus respectivos fragmentos remanescentes estão em um estado dinâmico,
-    potencialmente influenciado por regimes de perturbação naturais ou por crescentes intervenções humanas no uso do solo.
-    Tais informações descritivas são indispensáveis para a construção de um diagnóstico ambiental preciso e fundamentado,
-    que vá além da mera quantificação espacial e alcance a compreensão profunda dos processos ecológicos em curso.
-    Recomenda-se que estes dados estruturais sejam cruzados com outras variáveis ambientais da região, como topografia, hidrografia e infraestrutura de transporte,
-    para uma avaliação integrada e holística. Em síntese, a métrica espacial calculada reflete a complexidade do arranjo e da configuração espacial,
-    sendo um indicativo claro de como a organização física do território pode limitar, dificultar ou favorecer a manutenção da biodiversidade
-    e o provimento contínuo de serviços ecossistêmicos vitais para o bem-estar da sociedade e resiliência da região.
-    """)
+    top_class, top_value = df.iloc[-1]["Classe"], df.iloc[-1]["Valor"]
+    bottom_class, bottom_value = df.iloc[0]["Classe"], df.iloc[0]["Valor"]
+    if len(df) > 1:
+        st.caption(
+            f"Maior valor: **{top_class}** ({top_value:,.2f}) • Menor: "
+            f"**{bottom_class}** ({bottom_value:,.2f})"
+        )
 
 
 # Paleta categórica validada (skill de dataviz) — ordem fixa, usada para
@@ -918,10 +1058,7 @@ def _render_landscape_metrics(values: dict):
     classe como `_render_metric_chart` (ver choosing-a-form.md da skill de
     dataviz: um único número por métrica é um stat tile, não um chart)."""
     calculated = sum(1 for name, *_ in LANDSCAPE_METRICS_INFO if values.get(name) is not None)
-    st.markdown(
-        f"<h5 style=' color: black; background-color:yellow; padding:5px; border-radius: 5px; box-shadow: 0 0 0.1em black'> 🌎 Métricas da paisagem (nível global) — {calculated}/{len(LANDSCAPE_METRICS_INFO)}:</h5>",
-        unsafe_allow_html=True,
-    )
+    _section_header(f"🌎 Métricas da paisagem (nível global) — {calculated}/{len(LANDSCAPE_METRICS_INFO)}:")
     cols = st.columns(5)
     for i, (metric_name, icon, short_label, full_label) in enumerate(LANDSCAPE_METRICS_INFO):
         value = values.get(metric_name)
@@ -943,18 +1080,22 @@ def _extract_year_from_filename(filename: str):
 
 
 def _compute_fingerprint(data_source, tif_bytes=None, point_lonlat=None,
-                          buffer_dist=None, whole_raster=False) -> str:
+                          buffer_dist=None, whole_raster=False, municipio_codigo=None) -> str:
     """Identifica de forma estável 'esta mesma submissão', para o cache de
     resultados em db.metric_results — uma resubmissão com a mesma
     fingerprint reaproveita o resultado já calculado em vez de refazer a
     extração (Earth Engine/GeoTIFF) e o PyLandStats.
 
-    - GeoTIFF (com ou sem ponto): hash dos bytes do arquivo enviado — exato,
-      reconhece o mesmo arquivo independente do nome. `whole_raster` entra
-      na fingerprint para não colidir o mesmo arquivo submetido com ponto
-      numa vez e sem ponto em outra (resultados diferentes).
-    - MapBiomas (sem arquivo): hash do ponto (arredondado a 5 casas, ~1,1m —
-      absorve o jitter de redesenhar o mesmo ponto no mapa) + buffer.
+    - GeoTIFF (com ou sem ponto/município): hash dos bytes do arquivo
+      enviado — exato, reconhece o mesmo arquivo independente do nome.
+      `whole_raster` entra na fingerprint para não colidir o mesmo arquivo
+      submetido com ponto numa vez e sem ponto em outra (resultados
+      diferentes).
+    - MapBiomas ou GeoTIFF com área municipal: hash do código IBGE do
+      município (`municipio_codigo`), no lugar de ponto/buffer.
+    - MapBiomas com ponto (sem arquivo): hash do ponto (arredondado a 5
+      casas, ~1,1m — absorve o jitter de redesenhar o mesmo ponto no mapa) +
+      buffer.
 
     Não considera qual collection do MapBiomas foi usada (auto-detectada e
     pode mudar com o tempo, ver app.py `collection_number`) — checar isso
@@ -967,6 +1108,8 @@ def _compute_fingerprint(data_source, tif_bytes=None, point_lonlat=None,
     if tif_bytes is not None:
         hasher.update(b"|tif|")
         hasher.update(tif_bytes)
+    if municipio_codigo is not None:
+        hasher.update(f"|municipio|{municipio_codigo}".encode("utf-8"))
     if point_lonlat is not None:
         lon, lat = point_lonlat
         hasher.update(f"|point|{round(lon, 5)},{round(lat, 5)}".encode("utf-8"))
@@ -1018,6 +1161,200 @@ def _render_comparison_chart(file_results: list, metric_name: str, metric_label:
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False)
     fig.tight_layout()
     return fig
+
+
+def _build_transition_matrix(class_arrays: list, years: list) -> "pd.DataFrame":
+    """Constrói a matriz de transição de probabilidade (classe origem ×
+    classe destino) a partir de uma série de arrays de classe — base da
+    predição de anos futuros (`_project_future_landcover`, cadeia de
+    Markov). Soma as transições pixel-a-pixel de TODOS os pares de anos
+    consecutivos disponíveis (não só o primeiro/último), para aproveitar
+    toda a série.
+
+    Se dois arrays consecutivos tiverem shapes diferentes (arquivos de
+    resoluções/extents ligeiramente diferentes entre si), o array mais
+    recente do par é reamostrado por nearest-neighbor
+    (`scipy.ndimage.zoom`, ordem 0 — dado categórico, nunca interpolado)
+    para o shape do array anterior antes de comparar — aproximação
+    necessária para alinhar pixel-a-pixel, documentada aqui para quem for
+    interpretar o resultado."""
+    order = np.argsort(years)
+    arrays_sorted = [class_arrays[i] for i in order]
+
+    all_classes = sorted({int(c) for arr in arrays_sorted for c in np.unique(arr)})
+    counts = pd.DataFrame(0.0, index=all_classes, columns=all_classes)
+
+    for arr_before, arr_after in zip(arrays_sorted[:-1], arrays_sorted[1:]):
+        if arr_before.shape != arr_after.shape:
+            zoom_factors = (
+                arr_before.shape[0] / arr_after.shape[0],
+                arr_before.shape[1] / arr_after.shape[1],
+            )
+            arr_after = ndimage_zoom(arr_after, zoom_factors, order=0)
+            min_rows = min(arr_before.shape[0], arr_after.shape[0])
+            min_cols = min(arr_before.shape[1], arr_after.shape[1])
+            arr_before_cmp = arr_before[:min_rows, :min_cols]
+            arr_after_cmp = arr_after[:min_rows, :min_cols]
+        else:
+            arr_before_cmp, arr_after_cmp = arr_before, arr_after
+
+        pair_counts = pd.crosstab(arr_before_cmp.ravel(), arr_after_cmp.ravel())
+        counts = counts.add(pair_counts, fill_value=0.0)
+
+    counts = counts.reindex(index=all_classes, columns=all_classes, fill_value=0.0)
+    row_sums = counts.sum(axis=1)
+    transition = counts.div(row_sums, axis=0)
+
+    # Linhas sem nenhuma transição observada (classe nunca apareceu como
+    # "origem" em nenhum par de anos): assume identidade (sem mudança) como
+    # fallback conservador — evita NaN, que quebraria a soma de
+    # probabilidade = 1 exigida pela projeção via matriz.
+    for cls in counts.index[row_sums == 0]:
+        transition.loc[cls, cls] = 1.0
+    return transition.fillna(0.0)
+
+
+def _project_future_landcover(
+    transition_df: "pd.DataFrame", last_year: int, last_proportions: "pd.Series",
+    avg_interval: float, target_years: list,
+) -> "pd.DataFrame":
+    """Projeta a proporção de cada classe para os `target_years` informados,
+    usando a cadeia de Markov definida por `transition_df` (ver
+    `_build_transition_matrix`). `avg_interval` é o intervalo médio (anos)
+    entre as observações usadas para construir a matriz — define o
+    "tamanho do passo" de uma aplicação dela. Para anos-alvo que não caem
+    num múltiplo exato desse intervalo, usa potência fracionária da matriz
+    (`scipy.linalg.fractional_matrix_power`) — pode gerar pequenos
+    artefatos numéricos (proporções levemente negativas ou passando de
+    100%), por isso o resultado é sempre clampado a >= 0 e renormalizado
+    para somar 100%.
+
+    Método não-espacial: projeta só a distribuição agregada de classes, não
+    um mapa futuro — assume estacionariedade das probabilidades de
+    transição observadas no período histórico disponível."""
+    classes = list(transition_df.index)
+    transition_matrix = transition_df.reindex(index=classes, columns=classes, fill_value=0.0).to_numpy()
+    v0 = np.array([last_proportions.get(c, 0.0) for c in classes])
+
+    rows = []
+    for target_year in target_years:
+        n_steps = (target_year - last_year) / avg_interval
+        if n_steps <= 0:
+            continue
+        try:
+            step_matrix = np.real(fractional_matrix_power(transition_matrix, n_steps))
+        except Exception as power_error:
+            logger.warning(f"fractional_matrix_power falhou ({power_error}); usando potência inteira mais próxima.")
+            step_matrix = np.linalg.matrix_power(transition_matrix, max(round(n_steps), 1))
+        projected = np.clip(v0 @ step_matrix, 0.0, None)
+        total = projected.sum()
+        if total > 0:
+            projected = projected / total * 100
+        rows.append([target_year, *projected])
+
+    return pd.DataFrame(rows, columns=["ano", *classes]).set_index("ano")
+
+
+def _render_markov_prediction(file_results: list) -> None:
+    """UI da predição de anos futuros — só funciona com os arrays de pixel
+    brutos de cada ano (não com resultados vindos do cache, que só guardam
+    os VALORES das métricas já calculadas, ver `db.get_metric_result`).
+    Exige pelo menos 2 anos com array disponível e ano identificável pelo
+    nome do arquivo (ver `_extract_year_from_filename`)."""
+    usable = sorted(
+        (r for r in file_results if r.get("np_arr_mb") is not None and r.get("year") is not None),
+        key=lambda r: r["year"],
+    )
+    if len(usable) < 2:
+        st.info(
+            "🔮 Predição para anos futuros indisponível: são necessários pelo menos 2 "
+            "arquivos com ano identificável no nome do arquivo E calculados nesta sessão "
+            "(resultados vindos do cache não guardam os pixels brutos — marque "
+            "'Forçar novo cálculo' acima se precisar)."
+        )
+        return
+
+    years = [r["year"] for r in usable]
+    arrays = [r["np_arr_mb"] for r in usable]
+
+    _section_header("🔮 Predição para anos futuros")
+    st.caption(
+        "Projeta a proporção futura de cada classe de cobertura do solo a partir da "
+        "matriz de transição observada entre os anos calculados (cadeia de Markov). "
+        "Método não-espacial — projeta só as proporções agregadas, não um mapa futuro "
+        "— e assume que as probabilidades de transição observadas no histórico se "
+        "mantêm estáveis no tempo."
+    )
+
+    avg_interval = (years[-1] - years[0]) / (len(years) - 1)
+    max_target = years[-1] + 30
+    default_target = min(years[-1] + max(round(avg_interval), 1), max_target)
+
+    target_years = st.multiselect(
+        "Anos para projetar",
+        options=list(range(years[-1] + 1, max_target + 1)),
+        default=[default_target],
+        key="markov_target_years",
+    )
+    if not target_years:
+        return
+
+    transition_df = _build_transition_matrix(arrays, years)
+    last_classes, last_counts = np.unique(arrays[-1], return_counts=True)
+    last_proportions = pd.Series(last_counts / last_counts.sum(), index=last_classes.astype(int))
+
+    projection_df = _project_future_landcover(
+        transition_df, years[-1], last_proportions, avg_interval, sorted(target_years)
+    )
+    if projection_df.empty:
+        return
+
+    legend_dict = {i: name for i, name in enumerate(MAPBIOMAS_LEGEND_KEYS)}
+    projection_labeled = projection_df.rename(
+        columns={c: legend_dict.get(c, f"Classe {c}") for c in projection_df.columns}
+    )
+    st.dataframe(projection_labeled.round(2), use_container_width=True)
+
+    # Gráfico: histórico (linha sólida) + projeção (tracejada), ancorando o
+    # início da linha projetada no último ano observado para não deixar um
+    # "salto" visual entre as duas.
+    chart_rows = []
+    for year, arr in zip(years, arrays):
+        vals, counts = np.unique(arr, return_counts=True)
+        for cls, prop in zip(vals, counts / counts.sum() * 100):
+            chart_rows.append({"ano": year, "classe": int(cls), "valor": prop, "tipo": "Observado"})
+    for cls, prop in zip(last_classes, last_counts / last_counts.sum() * 100):
+        chart_rows.append({"ano": years[-1], "classe": int(cls), "valor": prop, "tipo": "Projetado"})
+    for year in projection_df.index:
+        for cls in projection_df.columns:
+            chart_rows.append({"ano": year, "classe": cls, "valor": projection_df.loc[year, cls], "tipo": "Projetado"})
+
+    chart_df = pd.DataFrame(chart_rows)
+    chart_df["Classe"] = chart_df["classe"].map(lambda c: legend_dict.get(c, f"Classe {c}"))
+    top_classes = (
+        chart_df[chart_df["tipo"] == "Observado"].groupby("Classe")["valor"].mean()
+        .sort_values(ascending=False).head(len(CATEGORICAL_PALETTE)).index.tolist()
+    )
+    chart_df = chart_df[chart_df["Classe"].isin(top_classes)]
+
+    chart = alt.Chart(chart_df).mark_line(point=True).encode(
+        x=alt.X("ano:O", title="Ano"),
+        y=alt.Y("valor:Q", title="Proporção da paisagem (%)"),
+        color=alt.Color("Classe:N", scale=alt.Scale(domain=top_classes, range=CATEGORICAL_PALETTE[:len(top_classes)])),
+        strokeDash=alt.StrokeDash("tipo:N", title=None),
+        tooltip=["ano", "Classe", alt.Tooltip("valor:Q", title="Proporção (%)", format=",.1f"), "tipo"],
+    ).properties(height=320)
+    st.altair_chart(chart, use_container_width=True)
+
+    csv_bytes = projection_labeled.round(3).to_csv(sep=";", decimal=",").encode("utf-8")
+    st.download_button(
+        "📥 Download CSV (predição)",
+        csv_bytes,
+        f"predicao_landcover_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        "text/csv",
+        key="download-markov-csv",
+        use_container_width=True,
+    )
 
 
 def _build_html_report(file_results: list, buffer_dist, data_source: str) -> str:
@@ -1140,6 +1477,9 @@ def _render_multi_file_results(file_results: list, buffer_dist, data_source: str
             plt.close(fig)
 
     st.markdown("---")
+    _render_markov_prediction(file_results)
+
+    st.markdown("---")
     st.markdown(
         "<h3 style='text-align: center;'>📥 Relatório para impressão</h3>",
         unsafe_allow_html=True,
@@ -1155,6 +1495,156 @@ def _render_multi_file_results(file_results: list, buffer_dist, data_source: str
         f"relatorio_landscape_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.html",
         "text/html",
         key="download-html-report",
+        use_container_width=True,
+    )
+
+
+def _build_sse_matrix(user_email: str) -> "pd.DataFrame":
+    """Monta a base da matriz socioecológica (SSE): uma linha por análise já
+    salva do usuário (ver 'Suas análises anteriores'/`db.metric_results`),
+    colunas = proporção de área por classe de cobertura do solo (wide) +
+    métricas de nível de paisagem + identificação (label, fonte,
+    município/UF/ano, data do cálculo). Só usa o que já está persistido —
+    não recalcula nada. Retorna um DataFrame vazio se o usuário ainda não
+    tem nenhuma análise salva."""
+    history = db.list_metric_results(user_email, full=True)
+    if not history:
+        return pd.DataFrame()
+
+    rows = []
+    for item in history:
+        class_metrics_df = pd.read_json(io.StringIO(item["class_metrics_json"]), orient="split")
+        landscape_metrics = json.loads(item["landscape_metrics_json"])
+
+        row = {
+            "label": item["label"],
+            "data_source": item["data_source"],
+            "municipio_codigo": item.get("municipio_codigo"),
+            "municipio_nome": item.get("municipio_nome"),
+            "municipio_uf": item.get("municipio_uf"),
+            "ano": item.get("ano"),
+            "created_at": item["created_at"],
+        }
+        if "proportion_of_landscape" in class_metrics_df.columns:
+            for cls_name, value in class_metrics_df["proportion_of_landscape"].items():
+                row[f"pct_{cls_name}"] = value
+        for name, _icon, short, _full in LANDSCAPE_METRICS_INFO:
+            if landscape_metrics.get(name) is not None:
+                row[short] = landscape_metrics[name]
+        rows.append(row)
+
+    matrix = pd.DataFrame(rows)
+    # Colunas pct_* ausentes numa linha significam "classe não presente
+    # nessa análise" (0%), não um dado faltante — só essas colunas levam
+    # fillna(0); o resto (município, ano, métricas de paisagem) fica NaN de
+    # propósito quando ausente.
+    pct_cols = [c for c in matrix.columns if c.startswith("pct_")]
+    matrix[pct_cols] = matrix[pct_cols].fillna(0.0)
+    return matrix
+
+
+def _render_sse_matrix_section(user_email: str) -> None:
+    """Seção 'Matriz socioecológica (SSE)': mostra a matriz de
+    `_build_sse_matrix`, permite anexar variáveis externas (socioeconômicas/
+    hidroclimáticas) via CSV do usuário casado por município+ano, enriquece
+    automaticamente com população estimada do IBGE quando há município
+    identificado, e oferece um heatmap de correlação + download CSV."""
+    _section_header("🧬 Matriz socioecológica (SSE)")
+    st.caption(
+        "Agrega todas as suas análises salvas (seção acima) numa única matriz "
+        "multivariada: uma linha por análise, métricas de paisagem + variáveis "
+        "socioeconômicas/hidroclimáticas que você anexar."
+    )
+
+    sse_matrix = _build_sse_matrix(user_email)
+    if sse_matrix.empty:
+        st.caption("Calcule ao menos uma análise (seções abaixo) para começar a montar a matriz.")
+        return
+
+    has_municipio = "municipio_codigo" in sse_matrix.columns and sse_matrix["municipio_codigo"].notna().any()
+    if has_municipio:
+        with st.spinner("🏘️ Buscando população estimada (IBGE) para os municípios da matriz..."):
+            sse_matrix["populacao_estimada_ibge"] = sse_matrix["municipio_codigo"].apply(
+                lambda cod: _ibge_get_populacao_estimada(str(cod)) if pd.notna(cod) else None
+            )
+
+    external_csv = st.file_uploader(
+        "📁 (Opcional) CSV com variáveis socioeconômicas/hidroclimáticas — precisa "
+        "ter a coluna 'municipio_codigo' (ou 'municipio_nome') e, se houver série "
+        "temporal, 'ano'; qualquer outra coluna é livre (ex.: populacao, pib, "
+        "precipitacao_mm, temperatura_media_c)",
+        type=["csv"],
+        key="sse_csv_upload",
+    )
+    if external_csv is not None:
+        try:
+            external_df = pd.read_csv(external_csv)
+        except Exception as csv_error:
+            st.error(f"❌ Não foi possível ler o CSV enviado: {csv_error}")
+            external_df = None
+
+        if external_df is not None:
+            if "municipio_codigo" in external_df.columns:
+                merge_cols = ["municipio_codigo"] + (["ano"] if "ano" in external_df.columns else [])
+            elif "municipio_nome" in external_df.columns:
+                merge_cols = ["municipio_nome"] + (["ano"] if "ano" in external_df.columns else [])
+            else:
+                merge_cols = None
+
+            if merge_cols is None:
+                st.error(
+                    "❌ O CSV precisa ter a coluna 'municipio_codigo' ou 'municipio_nome' "
+                    "para ser cruzado com suas análises."
+                )
+            else:
+                # Tipos precisam bater para o merge casar (ex.: código IBGE como
+                # texto dos dois lados) — nunca inventa/força um valor, só
+                # normaliza a representação.
+                for col in merge_cols:
+                    if col in sse_matrix.columns:
+                        sse_matrix[col] = sse_matrix[col].astype(str)
+                    external_df[col] = external_df[col].astype(str)
+
+                before_cols = set(sse_matrix.columns)
+                sse_matrix = sse_matrix.merge(external_df, on=merge_cols, how="left")
+                new_cols = [c for c in sse_matrix.columns if c not in before_cols]
+                matched = int(sse_matrix[new_cols].notna().any(axis=1).sum()) if new_cols else 0
+                st.caption(
+                    f"🔗 {matched}/{len(sse_matrix)} linha(s) casaram com o CSV enviado "
+                    f"(por {' + '.join(merge_cols)}). Linhas sem correspondência ficam com "
+                    "essas colunas vazias — a matriz nunca preenche um valor inventado."
+                )
+
+    st.dataframe(sse_matrix, use_container_width=True)
+
+    numeric_cols = sse_matrix.select_dtypes(include=[np.number]).columns.tolist()
+    if len(numeric_cols) >= 2:
+        with st.expander("🔥 Correlação entre variáveis (mapa de calor)", expanded=False):
+            corr = sse_matrix[numeric_cols].corr()
+            corr_long = corr.reset_index(names="variavel_1").melt(
+                id_vars="variavel_1", var_name="variavel_2", value_name="correlacao"
+            )
+            # Par diverging vermelho↔azul com meio-tom neutro cinza (ver skill de
+            # dataviz, references/palette.md § Diverging pair) — não a paleta
+            # categórica (CATEGORICAL_PALETTE), que é para identidade, não polaridade.
+            heatmap = alt.Chart(corr_long).mark_rect().encode(
+                x=alt.X("variavel_1:N", title=None),
+                y=alt.Y("variavel_2:N", title=None),
+                color=alt.Color(
+                    "correlacao:Q", title="Correlação",
+                    scale=alt.Scale(domain=[-1, 0, 1], range=["#e34948", "#f0efec", "#2a78d6"]),
+                ),
+                tooltip=["variavel_1", "variavel_2", alt.Tooltip("correlacao:Q", format=",.2f")],
+            ).properties(height=max(25 * len(numeric_cols), 200))
+            st.altair_chart(heatmap, use_container_width=True)
+
+    sse_csv_bytes = sse_matrix.to_csv(sep=";", decimal=",", index=False).encode("utf-8")
+    st.download_button(
+        "📥 Download CSV (matriz socioecológica)",
+        sse_csv_bytes,
+        f"matriz_socioecologica_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        "text/csv",
+        key="download-sse-csv",
         use_container_width=True,
     )
 
@@ -1199,17 +1689,16 @@ def main() -> None:
     col1, col2 = st.columns([2, 3])
 
     with col1:
-        original_title = '<h1 style="color:Blue">🏞️ Landscape Metrics Extractor</h1>'
-        st.markdown(original_title, unsafe_allow_html=True)
+        st.title("🏞️ Landscape Metrics Extractor")
         st.caption(
             "Powered by MapBiomas, Pylandstats, Google Earth Engine and Geemap | Developed by Pedro Higuchi ([@pe_hi](https://twitter.com/pe_hi))"
         )
         st.caption("Contato: higuchip@gmail.com")
 
     with col2:
-        st.markdown(
-            "<h4 style=' color: black; background-color:lightgreen; padding:25px; border-radius: 25px; box-shadow: 0 0 0.1em black'>Aplicativo Web para extração de métricas de paisagem de pontos de interesse a partir da base de dados do MapBiomas</h4>",
-            unsafe_allow_html=True,
+        st.info(
+            "Aplicativo Web para extração de métricas de paisagem de pontos ou "
+            "municípios de interesse a partir da base de dados do MapBiomas"
         )
 
     # Sidebar com informações de segurança
@@ -1244,7 +1733,14 @@ def main() -> None:
     else:
         for _item in _history:
             _when = _item["created_at"][:16].replace("T", " ")
-            _title = f"{_item['label']} · {_item['data_source']} · {_when}"
+            _municipio_bits = " · ".join(
+                filter(None, [_item.get("municipio_nome"), _item.get("municipio_uf")])
+            )
+            _ano_bit = f" · {int(_item['ano'])}" if _item.get("ano") is not None else ""
+            _title = (
+                f"{_item['label']} · {_item['data_source']}"
+                f"{' · ' + _municipio_bits if _municipio_bits else ''}{_ano_bit} · {_when}"
+            )
             with st.expander(_title, expanded=False):
                 _full = db.get_metric_result(user_email, _item["fingerprint"], [])
                 st.dataframe(_full["class_metrics_df_sub"], use_container_width=True)
@@ -1257,71 +1753,134 @@ def main() -> None:
     st.text(" ")
     st.markdown("---")
 
-    # Seção 1: Seleção do ponto
+    _render_sse_matrix_section(user_email)
+
+    st.markdown("---")
+
+    # Seção 1: Área de interesse — ponto+buffer (comportamento original) ou
+    # limite municipal (IBGE, ver `_ibge_get_*`/`extract_landscape_from_tif`
+    # `region_geojson`).
     st.markdown(
-        "<h3>1) Selecione um ponto de interesse 📌 </h3>",
+        "<h3>1) Área de interesse 🗺️</h3>",
         unsafe_allow_html=True,
     )
-
-    st.warning(
-        "⚠️ **Instruções:** Use apenas a ferramenta 'Draw a marker' para selecionar **UM** ponto, depois clique em 'Export'."
+    roi_mode = st.radio(
+        "Como você quer definir a área de interesse?",
+        ["📌 Ponto + buffer", "🏘️ Limite municipal (IBGE)"],
+        horizontal=True,
     )
 
-    # Mapa para seleção de pontos
-    try:
-        Map = geemap.Map(
-            center=[-15.7801, -47.9292], 
-            zoom=5, 
-            Draw_export=True,
-            plugin_Draw=True,
-            plugin_LatLngPopup=False
+    data = None
+    municipio_info = None
+
+    if roi_mode == "📌 Ponto + buffer":
+        st.markdown("#### Selecione um ponto de interesse 📌")
+        st.warning(
+            "⚠️ **Instruções:** Use apenas a ferramenta 'Draw a marker' para selecionar **UM** ponto, depois clique em 'Export'."
         )
-        Map.add_basemap("HYBRID")
 
-        # Container para o mapa
-        map_container = st.container()
-        with map_container:
-            map_data = st_folium(Map, width=700, height=400, returned_objects=["last_clicked", "all_drawings"])
-
-    except Exception as map_error:
-        logger.error(f"Erro ao criar mapa: {map_error}")
-        st.error("❌ Erro ao carregar o mapa. Verifique a conexão com o Earth Engine.")
-    
-        # Mapa alternativo simples
-        st.info("🗺️ Carregando mapa alternativo...")
+        # Mapa para seleção de pontos
         try:
-            import folium
-            m = folium.Map(location=[-15.7801, -47.9292], zoom_start=5)
-            folium.Marker([-15.7801, -47.9292], popup="Exemplo de localização").add_to(m)
-            st_folium(m, width=700, height=400)
-            st.warning("⚠️ Use o mapa acima como referência e carregue um arquivo GeoJSON manualmente.")
-        except Exception as folium_error:
-            logger.error(f"Erro no mapa alternativo: {folium_error}")
-            st.error("❌ Não foi possível carregar nenhum mapa. Prossiga diretamente para o upload do arquivo GeoJSON.")
+            Map = geemap.Map(
+                center=[-15.7801, -47.9292],
+                zoom=5,
+                Draw_export=True,
+                plugin_Draw=True,
+                plugin_LatLngPopup=False
+            )
+            Map.add_basemap("HYBRID")
+
+            # Container para o mapa
+            map_container = st.container()
+            with map_container:
+                map_data = st_folium(Map, width=700, height=400, returned_objects=["last_clicked", "all_drawings"])
+
+        except Exception as map_error:
+            logger.error(f"Erro ao criar mapa: {map_error}")
+            st.error("❌ Erro ao carregar o mapa. Verifique a conexão com o Earth Engine.")
+
+            # Mapa alternativo simples
+            st.info("🗺️ Carregando mapa alternativo...")
+            try:
+                import folium
+                m = folium.Map(location=[-15.7801, -47.9292], zoom_start=5)
+                folium.Marker([-15.7801, -47.9292], popup="Exemplo de localização").add_to(m)
+                st_folium(m, width=700, height=400)
+                st.warning("⚠️ Use o mapa acima como referência e carregue um arquivo GeoJSON manualmente.")
+            except Exception as folium_error:
+                logger.error(f"Erro no mapa alternativo: {folium_error}")
+                st.error("❌ Não foi possível carregar nenhum mapa. Prossiga diretamente para o upload do arquivo GeoJSON.")
+
+        st.markdown("#### Upload do ponto de interesse 📤")
+        data = st.file_uploader(
+            "📁 Faça upload do GeoJSON exportado acima, ou de um shapefile do ponto compactado em .zip",
+            type=["geojson", "zip"],
+            help=(
+                f"Limite: {MAX_FILE_SIZE // (1024*1024)}MB • GeoJSON (.geojson) ou shapefile "
+                "compactado (.zip com .shp+.shx+.dbf+.prj) — em ambos os casos, com exatamente "
+                "1 ponto"
+            ),
+        )
+    else:
+        st.markdown("#### Selecione o município 🏘️")
+        try:
+            ufs = _ibge_get_ufs()
+        except requests.RequestException as ufs_error:
+            logger.error(f"Falha ao buscar UFs do IBGE: {ufs_error}")
+            st.error(
+                "❌ Não foi possível buscar a lista de estados na API do IBGE. "
+                "Verifique sua conexão e tente novamente."
+            )
+            ufs = []
+
+        if ufs:
+            uf_labels = {f"{uf['sigla']} — {uf['nome']}": uf["sigla"] for uf in ufs}
+            uf_label = st.selectbox("Estado (UF)", list(uf_labels.keys()))
+            uf_sigla = uf_labels[uf_label]
+
+            try:
+                municipios = _ibge_get_municipios(uf_sigla)
+            except requests.RequestException as municipios_error:
+                logger.error(f"Falha ao buscar municípios do IBGE ({uf_sigla}): {municipios_error}")
+                st.error("❌ Não foi possível buscar os municípios dessa UF na API do IBGE.")
+                municipios = []
+
+            if municipios:
+                municipio_labels = {m["nome"]: m for m in sorted(municipios, key=lambda m: m["nome"])}
+                municipio_label = st.selectbox("Município", list(municipio_labels.keys()))
+                municipio_sel = municipio_labels[municipio_label]
+
+                municipio_geojson = _ibge_get_municipio_geojson(str(municipio_sel["id"]))
+                if municipio_geojson is None:
+                    st.error(
+                        "❌ Não foi possível buscar o limite territorial deste município na "
+                        "API do IBGE (malhas territoriais). Tente novamente em instantes ou "
+                        "escolha outro município."
+                    )
+                else:
+                    municipio_info = {
+                        "codigo": str(municipio_sel["id"]),
+                        "nome": municipio_sel["nome"],
+                        "uf": uf_sigla,
+                        "geojson": municipio_geojson,
+                    }
+                    st.success(f"✅ Município selecionado: {municipio_info['nome']}/{uf_sigla}")
+                    try:
+                        municipio_geom_preview = _municipio_geometry_shapely(municipio_geojson)
+                        centroid = municipio_geom_preview.centroid
+                        import folium
+                        preview_map = folium.Map(location=[centroid.y, centroid.x], zoom_start=9)
+                        folium.GeoJson(municipio_geojson, name=municipio_info["nome"]).add_to(preview_map)
+                        st_folium(preview_map, width=700, height=350, returned_objects=[])
+                    except Exception as preview_error:
+                        logger.warning(f"Falha ao desenhar preview do município: {preview_error}")
+                        st.info("📍 Município pronto para análise (preview do mapa indisponível).")
 
     st.markdown("---")
 
-    # Seção 2: Upload do arquivo
+    # Seção 2: Fonte dos dados de cobertura do solo
     st.markdown(
-        "<h3>2) Upload do ponto de interesse 📤</h3>",
-        unsafe_allow_html=True,
-    )
-
-    data = st.file_uploader(
-        "📁 Faça upload do GeoJSON exportado acima, ou de um shapefile do ponto compactado em .zip",
-        type=["geojson", "zip"],
-        help=(
-            f"Limite: {MAX_FILE_SIZE // (1024*1024)}MB • GeoJSON (.geojson) ou shapefile "
-            "compactado (.zip com .shp+.shx+.dbf+.prj) — em ambos os casos, com exatamente "
-            "1 ponto"
-        ),
-    )
-
-    st.markdown("---")
-
-    # Seção 3: Fonte dos dados de cobertura do solo
-    st.markdown(
-        "<h3>3) Fonte dos dados de cobertura do solo 🛰️</h3>",
+        "<h3>2) Fonte dos dados de cobertura do solo 🛰️</h3>",
         unsafe_allow_html=True,
     )
 
@@ -1350,6 +1909,11 @@ def main() -> None:
                 "separadamente e comparado ao final (ano identificado pelo nome do "
                 "arquivo, quando presente)."
             )
+        elif roi_mode == "🏘️ Limite municipal (IBGE)":
+            st.caption(
+                "O limite municipal selecionado na Seção 1 recorta este raster "
+                "automaticamente — ele pode cobrir uma área bem maior que o município."
+            )
         elif data:
             st.caption(
                 "O ponto e o buffer definidos abaixo recortam este raster — ele pode "
@@ -1357,7 +1921,7 @@ def main() -> None:
             )
         else:
             st.info(
-                "📌 Nenhum ponto foi enviado na Seção 2 — as métricas serão calculadas "
+                "📌 Nenhum ponto foi enviado na Seção 1 — as métricas serão calculadas "
                 "para a área **inteira** deste raster, sem recorte por ponto/buffer."
             )
 
@@ -1373,28 +1937,43 @@ def main() -> None:
 
     st.markdown("---")
 
-    # Modo raster inteiro: só faz sentido com raster próprio (o MapBiomas é
-    # um asset nacional, sem um "raster inteiro" delimitado, então sempre
-    # exige um ponto+buffer). Ativado quando o usuário sobe um GeoTIFF sem
-    # também subir um ponto de interesse na Seção 2.
+    # Modo raster inteiro: só faz sentido com raster próprio no modo
+    # "ponto+buffer" (o MapBiomas é um asset nacional, sem um "raster
+    # inteiro" delimitado, então sempre exige um ponto+buffer ou município).
+    # Ativado quando o usuário sobe um GeoTIFF sem também subir um ponto de
+    # interesse na Seção 1. No modo município, o raster é sempre recortado
+    # pelo limite municipal — não existe "modo raster inteiro" nesse caso.
     own_raster_whole_mode = (
-        data_source == "Meu raster (GeoTIFF)" and bool(tif_files) and not data
+        data_source == "Meu raster (GeoTIFF)" and bool(tif_files)
+        and roi_mode == "📌 Ponto + buffer" and not data
     )
 
     # Processamento principal
-    ready_to_process = (
-        (data_source == "MapBiomas (Google Earth Engine)" and data)
-        or (data_source == "Meu raster (GeoTIFF)" and tif_files)
-    )
+    if roi_mode == "🏘️ Limite municipal (IBGE)":
+        ready_to_process = municipio_info is not None and (
+            data_source == "MapBiomas (Google Earth Engine)"
+            or (data_source == "Meu raster (GeoTIFF)" and tif_files)
+        )
+    else:
+        ready_to_process = (
+            (data_source == "MapBiomas (Google Earth Engine)" and data)
+            or (data_source == "Meu raster (GeoTIFF)" and tif_files)
+        )
     if ready_to_process:
         try:
-            if own_raster_whole_mode:
+            if roi_mode == "🏘️ Limite municipal (IBGE)":
                 gdf_features = None
                 buffer_dist = None
+                region_geojson = municipio_info["geojson"]
+            elif own_raster_whole_mode:
+                gdf_features = None
+                buffer_dist = None
+                region_geojson = None
             else:
-                # Seção 4: Configuração do buffer
+                region_geojson = None
+                # Seção 3: Configuração do buffer
                 st.markdown(
-                    "<h3>4) Defina o tamanho do raio (m) do buffer 🎯</h3>",
+                    "<h3>3) Defina o tamanho do raio (m) do buffer 🎯</h3>",
                     unsafe_allow_html=True,
                 )
 
@@ -1446,7 +2025,7 @@ def main() -> None:
             # etapa; o resultado fica em st.session_state para sobreviver a
             # reruns causados por outros widgets (ex.: o botão de download).
             st.markdown(
-                "<h3>5) Calcular métricas 🧮</h3>",
+                "<h3>4) Calcular métricas 🧮</h3>",
                 unsafe_allow_html=True,
             )
             calculate_clicked = st.button(
@@ -1471,7 +2050,27 @@ def main() -> None:
                         overall_progress.progress(min(max(fraction, 0.0), 1.0), text=f"{label} ({pct}%)")
 
                     try:
-                        if own_raster_whole_mode:
+                        if roi_mode == "🏘️ Limite municipal (IBGE)":
+                            _set_stage(
+                                0.10,
+                                f"Preparando área de interesse (município: {municipio_info['nome']}/{municipio_info['uf']})...",
+                            )
+                            st.write(
+                                f"🏘️ Preparando área municipal: {municipio_info['nome']}/{municipio_info['uf']}..."
+                            )
+                            try:
+                                municipio_geom_ee = mapping(_municipio_geometry_shapely(region_geojson))
+                                roi_buffer = ee.Geometry(municipio_geom_ee)
+                                roi = ee.FeatureCollection([ee.Feature(roi_buffer)])
+                                st.write(f"✅ Área municipal pronta: {municipio_info['nome']}/{municipio_info['uf']}")
+                            except Exception as municipio_roi_error:
+                                logger.error(f"Erro ao preparar geometria municipal para o Earth Engine: {municipio_roi_error}")
+                                raise RuntimeError(
+                                    f"Não foi possível preparar a geometria de "
+                                    f"'{municipio_info['nome']}/{municipio_info['uf']}' para o Earth Engine."
+                                ) from municipio_roi_error
+                            _set_stage(0.20, "Área de interesse pronta")
+                        elif own_raster_whole_mode:
                             roi = None
                             roi_buffer = None
                             _set_stage(0.20, "Modo raster inteiro — sem ponto/buffer")
@@ -1571,9 +2170,11 @@ def main() -> None:
                                     _point_lonlat_i = (
                                         gdf_features[0]['geometry']['coordinates'] if gdf_features else None
                                     )
+                                    _year_i = _extract_year_from_filename(_tif_item.name)
                                     _fingerprint_i = _compute_fingerprint(
                                         data_source, tif_bytes=_tif_item.getvalue(), point_lonlat=_point_lonlat_i,
                                         buffer_dist=buffer_dist, whole_raster=own_raster_whole_mode,
+                                        municipio_codigo=municipio_info["codigo"] if municipio_info else None,
                                     )
                                     _required_metric_names = [name for name, *_ in METRICS_INFO]
                                     _cached_i = (
@@ -1588,7 +2189,7 @@ def main() -> None:
                                         )
                                         file_results.append({
                                             "label": _tif_item.name,
-                                            "year": _extract_year_from_filename(_tif_item.name),
+                                            "year": _year_i,
                                             "np_arr_mb": None,
                                             "ls": None,
                                             "class_metrics_df_sub": _cached_i["class_metrics_df_sub"],
@@ -1598,7 +2199,13 @@ def main() -> None:
                                         continue
 
                                     try:
-                                        if own_raster_whole_mode:
+                                        if municipio_info is not None:
+                                            _arr, _res, _reproj_bytes = extract_landscape_from_tif(
+                                                _tif_item, region_geojson=region_geojson,
+                                                on_progress=_update_tif_progress,
+                                                cleanup=False, temp_path_out=_temp_paths,
+                                            )
+                                        elif own_raster_whole_mode:
                                             _arr, _res, _reproj_bytes = extract_landscape_from_tif(
                                                 _tif_item, on_progress=_update_tif_progress,
                                                 cleanup=False, temp_path_out=_temp_paths,
@@ -1616,8 +2223,8 @@ def main() -> None:
                                             f"'{_tif_item.name}'. Isso não gera uma análise substituta com "
                                             "dados de exemplo — a extração real é obrigatória para que as "
                                             f"métricas exibidas sejam confiáveis. Detalhes: {_tif_error}. "
-                                            "Possíveis causas: buffer fora da área do raster, CRS incompatível, "
-                                            "raster com apenas nodata, ou arquivo corrompido."
+                                            "Possíveis causas: buffer/município fora da área do raster, CRS "
+                                            "incompatível, raster com apenas nodata, ou arquivo corrompido."
                                         ) from _tif_error
 
                                     st.write(
@@ -1630,6 +2237,10 @@ def main() -> None:
                                     db.save_metric_result(
                                         user_email, _fingerprint_i, _tif_item.name, data_source,
                                         _point_lonlat_i, buffer_dist, _df_sub_i, _landscape_metrics_i,
+                                        municipio_codigo=municipio_info["codigo"] if municipio_info else None,
+                                        municipio_nome=municipio_info["nome"] if municipio_info else None,
+                                        municipio_uf=municipio_info["uf"] if municipio_info else None,
+                                        ano=_year_i,
                                     )
                                     file_results.append({
                                         "label": _tif_item.name,
@@ -1682,7 +2293,9 @@ def main() -> None:
                             fingerprint = _compute_fingerprint(
                                 data_source, tif_bytes=tif_bytes, point_lonlat=point_lonlat,
                                 buffer_dist=buffer_dist, whole_raster=own_raster_whole_mode,
+                                municipio_codigo=municipio_info["codigo"] if municipio_info else None,
                             )
+                            ano = None  # preenchido abaixo (MapBiomas: ano mais recente; GeoTIFF: nome do arquivo)
                             required_metric_names = [name for name, *_ in METRICS_INFO]
                             cached_result = (
                                 None if force_recompute else
@@ -1761,6 +2374,7 @@ def main() -> None:
 
                                         latest_year = max(available_years) if available_years else (2023 if collection_number >= 9 else 2022)
                                         classification_band = f'classification_{latest_year}'
+                                        ano = latest_year
 
                                         st.write(f"📅 Usando dados do ano: {latest_year}")
 
@@ -1845,7 +2459,10 @@ def main() -> None:
                                             "buffer ou selecione outro ponto."
                                         ) from mb_error
                                 else:
+                                    ano = _extract_year_from_filename(tif_file.name) if tif_file else None
                                     tif_stage_label = (
+                                        f"Recortando o GeoTIFF enviado pelo limite municipal ({municipio_info['nome']})..."
+                                        if municipio_info is not None else
                                         "Lendo o GeoTIFF enviado por completo (raster inteiro)..."
                                         if own_raster_whole_mode else
                                         "Recortando o GeoTIFF enviado..."
@@ -1861,7 +2478,12 @@ def main() -> None:
                                         _set_stage(0.25 + 0.5 * min(max(fraction, 0.0), 1.0), label)
 
                                     try:
-                                        if own_raster_whole_mode:
+                                        if municipio_info is not None:
+                                            np_arr_mb, resolution, reprojected_tif_bytes = extract_landscape_from_tif(
+                                                tif_file, region_geojson=region_geojson,
+                                                on_progress=_update_tif_progress,
+                                            )
+                                        elif own_raster_whole_mode:
                                             np_arr_mb, resolution, reprojected_tif_bytes = extract_landscape_from_tif(
                                                 tif_file, on_progress=_update_tif_progress,
                                             )
@@ -1949,11 +2571,19 @@ def main() -> None:
                                 )
                                 landscape_metrics = _compute_landscape_metrics(ls)
 
+                                _default_label = (
+                                    f"{municipio_info['nome']}/{municipio_info['uf']}"
+                                    if municipio_info else "MapBiomas (Google Earth Engine)"
+                                )
                                 db.save_metric_result(
                                     user_email, fingerprint,
-                                    tif_file.name if tif_file else "MapBiomas (Google Earth Engine)",
+                                    tif_file.name if tif_file else _default_label,
                                     data_source, point_lonlat, buffer_dist,
                                     class_metrics_df_sub, landscape_metrics,
+                                    municipio_codigo=municipio_info["codigo"] if municipio_info else None,
+                                    municipio_nome=municipio_info["nome"] if municipio_info else None,
+                                    municipio_uf=municipio_info["uf"] if municipio_info else None,
+                                    ano=ano,
                                 )
 
                             # Persiste tudo que a renderização abaixo precisa, para
@@ -1998,10 +2628,7 @@ def main() -> None:
                     reprojected_tif_bytes = st.session_state.get("reprojected_tif_bytes")
 
                     def _render_landscape_plot():
-                        st.markdown(
-                            "<h5 style=' color: black; background-color:yellow; padding:5px; border-radius: 5px; box-shadow: 0 0 0.1em black'> 🗺️ Classes de cobertura do solo:</h5>",
-                            unsafe_allow_html=True
-                        )
+                        _section_header("🗺️ Classes de cobertura do solo:")
 
                         if ls is None:
                             # Resultado veio do cache (ver _compute_fingerprint/db.get_metric_result)
@@ -2035,10 +2662,7 @@ def main() -> None:
                         col1, col2 = st.columns(2)
 
                         with col1:
-                            st.markdown(
-                                "<h5 style=' color: black; background-color:yellow; padding:5px; border-radius: 5px; box-shadow: 0 0 0.1em black'> 📍 Área de interesse:</h5>",
-                                unsafe_allow_html=True
-                            )
+                            _section_header("📍 Área de interesse:")
 
                             # Mapa da área de interesse
                             try:
@@ -2060,10 +2684,7 @@ def main() -> None:
                     st.markdown("---")
 
                     # Cálculo das métricas
-                    st.markdown(
-                        "<h5 style=' color: black; background-color:yellow; padding:5px; border-radius: 5px; box-shadow: 0 0 0.1em black'> 📈 Métricas da paisagem:</h5>",
-                        unsafe_allow_html=True
-                    )
+                    _section_header("📈 Métricas da paisagem:")
                     st.info(
                         f"📊 **{len(class_metrics_df_sub.columns)} métricas por classe**, "
                         f"{len(class_metrics_df_sub)} classe(s) com mais de 10% de proporção "

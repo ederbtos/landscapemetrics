@@ -2,20 +2,22 @@
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Progresso](https://img.shields.io/badge/roadmap-95%25-yellow.svg)
+![Progresso](https://img.shields.io/badge/roadmap-96%25-yellow.svg)
 
 > ℹ️ O link de demo online desta versão foi removido: a arquitetura de login e
 > credenciais por usuário mudou (veja [ROADMAP.md](ROADMAP.md)) e a Fase 4
 > (deploy público com HTTPS) ainda está pendente de execução. Por enquanto,
 > rode localmente ou via Docker — veja [🔧 Instalação](#-instalação).
 >
-> **Progresso: 95%** — Fases 1-3 (landing page, login, credenciais por
-> usuário) e Fase 5 (motor de métricas de paisagem: MapBiomas + GeoTIFF
+> **Progresso: 96%** — Fases 1-3 (landing page, login, credenciais por
+> usuário), Fase 5 (motor de métricas de paisagem: MapBiomas + GeoTIFF
 > próprio, um ou vários arquivos, reprojeção automática, métricas de
-> classe + paisagem do FRAGSTATS) concluídas; Fase 4 (deploy) está
-> totalmente automatizada em [scripts/deploy.sh](scripts/deploy.sh),
-> faltando só a decisão de servidor/domínio e a execução. Detalhamento por
-> fase em [ROADMAP.md](ROADMAP.md#progresso-geral-95).
+> classe + paisagem do FRAGSTATS) e Fase 6 (área municipal via IBGE, matriz
+> socioecológica e predição de anos futuros via Markov) concluídas; Fase 4
+> (deploy) está totalmente automatizada em
+> [scripts/deploy.sh](scripts/deploy.sh), faltando só a decisão de
+> servidor/domínio e a execução. Detalhamento por fase em
+> [ROADMAP.md](ROADMAP.md#progresso-geral-96).
 
 **Aplicativo Web para extração de métricas de paisagem de pontos de interesse a partir da base de dados do MapBiomas**
 
@@ -36,12 +38,15 @@ Cada usuário faz login (por e-mail/senha ou, opcionalmente, com Google) e cadas
 - **🔑 Login por e-mail/senha (+ Google opcional)**: acesso à ferramenta só depois de autenticado, com cadastro aberto por e-mail/senha e um botão extra "Entrar com Google" quando configurado
 - **🔒 Credenciais por usuário**: cada usuário cadastra e usa sua própria conta de serviço do Earth Engine, guardada criptografada
 - **📍 Seleção Interativa**: Interface com mapas para seleção de pontos de interesse
+- **🏘️ Área de interesse por município (IBGE)**: alternativa ao ponto+buffer — escolha um estado e um município (via API do IBGE) e a análise usa o limite territorial oficial inteiro, com preview do polígono no mapa antes de calcular
 - **🛰️ Dados MapBiomas**: acesso à collection mais recente disponível (com fallback automático para collections anteriores)
 - **📤 GeoTIFF próprio (opcional)**: alternativa ao MapBiomas/Earth Engine — envie seu próprio raster de cobertura do solo (até 5GB, códigos de classe MapBiomas). Se você também enviar um ponto de interesse, o app recorta a área do buffer automaticamente; se enviar **só o raster**, calcula as métricas para a extensão **inteira** do arquivo
 - **🧭 Reprojeção automática**: se o GeoTIFF enviado estiver em coordenadas geográficas (graus), o app reprojeta automaticamente (zona UTM do ponto, ou SIRGAS 2000/Brazil Polyconic no modo raster inteiro) — não precisa reprojetar manualmente antes de enviar. O raster convertido fica disponível para download
 - **🧮 Cálculo sob demanda**: o processamento só roda quando você clica em "Calcular métricas", com cada etapa visível em tempo real e uma barra de progresso única (etapa + %) do início ao fim — não recalcula sozinho a cada interação com a página
 - **✨ Métricas reveladas uma a uma**: cada métrica de paisagem aparece em sua própria seção conforme é calculada, com gráfico de barras interativo (por classe) + tabela, em vez de só uma tabela técnica ao final
 - **📚 Múltiplos GeoTIFFs comparados**: envie mais de um raster próprio (ex.: anos diferentes da mesma área) — cada um é processado separadamente e comparado num gráfico por métrica (ano identificado pelo nome do arquivo, quando presente), com um relatório HTML para baixar, abrir no navegador e imprimir/salvar como PDF
+- **🔮 Predição para anos futuros (Markov)**: com 2+ GeoTIFFs de anos diferentes, o app monta a matriz de transição entre classes de uso do solo e projeta a proporção futura de cada classe para os anos que você escolher — método não-espacial, projeta só proporções agregadas, não um mapa futuro
+- **🧬 Matriz socioecológica (SSE)**: agrega todas as suas análises salvas (ponto ou município, ao longo do tempo) numa matriz multivariada — métricas de paisagem por linha, com a opção de anexar variáveis socioeconômicas/hidroclimáticas via upload de CSV (casadas por município+ano) e enriquecimento automático com população estimada do IBGE
 - **📊 Análise Robusta**: Cálculo de 12+ métricas de paisagem diferentes
 - **📥 Exportação**: Download dos resultados em formato CSV
 - **🗺️ Visualização**: Mapas interativos e gráficos das classes de uso do solo
@@ -67,10 +72,13 @@ Versões conforme [requirements.txt](requirements.txt) — mantenha esse arquivo
 | `bcrypt` | 4.2.1 | Hash de senha das contas por e-mail/senha |
 | `Authlib` + `httpx` | 1.7.2 / 0.28.1 | OAuth do login com Google (opcional, via `st.login()`) |
 | `cryptography` | 49.0.0 | Criptografia (Fernet) das credenciais salvas por usuário |
+| `requests` | 2.34.2 | Chamadas à API do IBGE (localidades, malhas territoriais, população estimada) |
+| `scipy` | 1.17.1 | Predição de anos futuros (potência fracionária da matriz de transição, cadeia de Markov) |
 
 ### Fontes de Dados
 
 - **MapBiomas**: dados de uso e cobertura da terra (tenta Collection 9 e recua para 8/7/6 conforme disponibilidade)
+- **IBGE**: limites municipais (malhas territoriais) e população estimada (SIDRA), usados na área de interesse por município e na matriz socioecológica
 - **Google Earth Engine**: Plataforma de processamento geoespacial
 
 ---
@@ -173,38 +181,34 @@ atualizado depois no expander "🔑 Atualizar credenciais do Earth Engine").
 
 ### 2. Siga o Fluxo da Interface
 
-#### **Passo 1: Seleção do Ponto**
+#### **Passo 1: Área de interesse**
 
-- Use a ferramenta "Draw a marker" no mapa
-- Selecione **apenas um ponto** de interesse
-- Clique em "Export" para gerar o arquivo GeoJSON
+Escolha entre dois modos:
 
-#### **Passo 2: Upload do Arquivo**
+- **📌 Ponto + buffer**: use a ferramenta "Draw a marker" no mapa, selecione **apenas um ponto**, clique em "Export" e faça upload do GeoJSON exportado (ou de um shapefile do ponto compactado em `.zip` — `.shp`+`.shx`+`.dbf`+`.prj`; limite 10MB). **Obrigatório** se a fonte de dados (Passo 2) for MapBiomas; se a fonte for seu próprio GeoTIFF, esse upload é **opcional** — veja "modo raster inteiro" abaixo.
+- **🏘️ Limite municipal (IBGE)**: escolha um estado e um município nos dois seletores (populados pela API do IBGE) — a área de interesse passa a ser o limite territorial oficial do município inteiro, com um preview do polígono no mapa. Não há slider de buffer nesse modo.
 
-- Faça upload do ponto de interesse: GeoJSON exportado do mapa acima, ou um shapefile do ponto compactado em `.zip` (`.shp`+`.shx`+`.dbf`+`.prj`)
-- Limite: 10MB
-- **Obrigatório** se a fonte de dados (Passo 3) for MapBiomas. Se a fonte for seu próprio GeoTIFF, esse upload é **opcional** — veja "modo raster inteiro" abaixo
-
-#### **Passo 3: Fonte dos dados de cobertura do solo**
+#### **Passo 2: Fonte dos dados de cobertura do solo**
 
 Escolha entre:
 
-- **MapBiomas (Google Earth Engine)**: padrão, usa a collection mais recente disponível (ver [🌍 Classes MapBiomas Suportadas](#-classes-mapbiomas-suportadas)). Sempre exige o ponto do Passo 2 (é um asset nacional, sem uma "extensão inteira" delimitada)
+- **MapBiomas (Google Earth Engine)**: padrão, usa a collection mais recente disponível (ver [🌍 Classes MapBiomas Suportadas](#-classes-mapbiomas-suportadas))
 - **Meu raster (GeoTIFF)**: envie um ou **vários** rasters de cobertura do solo (limite 5GB cada). Requisitos:
   - Mesmos códigos de classe do MapBiomas (1=Floresta, 15=Pastagem etc.)
-  - CRS qualquer: se estiver em coordenadas geográficas (graus), o app reprojeta **automaticamente** antes de calcular (zona UTM do ponto, ou SIRGAS 2000/Brazil Polyconic no modo raster inteiro) — não precisa reprojetar manualmente antes de enviar. O arquivo convertido fica disponível para download na seção de resultados
-  - **Com ponto enviado no Passo 2**: pode cobrir uma área bem maior que o buffer — o app recorta automaticamente a região ao redor do ponto selecionado
-  - **Sem ponto enviado no Passo 2 (modo raster inteiro)**: o app calcula as métricas para a extensão **inteira** do raster, sem recorte — útil quando o próprio arquivo já é a área de interesse
-  - **Mais de um arquivo enviado**: cada um é processado separadamente e comparado ao final — se o nome do arquivo tiver um ano (ex.: `Corte_255_2010.tif`), a comparação vira uma série temporal; senão, usa a ordem de upload
+  - CRS qualquer: se estiver em coordenadas geográficas (graus), o app reprojeta **automaticamente** antes de calcular (zona UTM do ponto, SIRGAS 2000/Brazil Polyconic no modo raster inteiro, ou a zona UTM do centróide no modo município) — não precisa reprojetar manualmente antes de enviar. O arquivo convertido fica disponível para download na seção de resultados
+  - **Modo ponto, com ponto enviado**: pode cobrir uma área bem maior que o buffer — o app recorta automaticamente a região ao redor do ponto selecionado
+  - **Modo ponto, sem ponto enviado (modo raster inteiro)**: o app calcula as métricas para a extensão **inteira** do raster, sem recorte — útil quando o próprio arquivo já é a área de interesse
+  - **Modo município**: o app recorta automaticamente pelo limite municipal selecionado no Passo 1
+  - **Mais de um arquivo enviado**: cada um é processado separadamente e comparado ao final — se o nome do arquivo tiver um ano (ex.: `Corte_255_2010.tif`), a comparação vira uma série temporal (habilita a predição para anos futuros, ver abaixo); senão, usa a ordem de upload
 
-#### **Passo 4: Configuração do Buffer**
+#### **Passo 3: Configuração do Buffer**
 
-> Só aparece se você enviou um ponto de interesse no Passo 2. No modo raster inteiro (GeoTIFF sem ponto), esta etapa é pulada.
+> Só aparece no modo ponto+buffer, com um ponto enviado. No modo raster inteiro ou no modo município, esta etapa é pulada.
 
 - Ajuste o raio do buffer (1.000-10.000m)
 - Buffer maior = área de análise maior
 
-#### **Passo 5: Calcular métricas**
+#### **Passo 4: Calcular métricas**
 
 - Clique no botão **"🧮 Calcular métricas"** — o cálculo não roda mais sozinho a cada interação, só quando você pede
 - Acompanhe o andamento em tempo real: cada etapa (preparar área, conectar ao MapBiomas ou recortar o GeoTIFF, calcular métricas) aparece com seu próprio status, dentro de um painel expansível
@@ -214,7 +218,7 @@ Escolha entre:
 
 **Um arquivo (ou MapBiomas):**
 
-- **Mapa da área**: Visualização do buffer aplicado (não aparece no modo raster inteiro, já que não há um ponto/buffer para mostrar)
+- **Mapa da área**: Visualização do buffer ou do limite municipal aplicado (não aparece no modo raster inteiro, já que não há um ponto/buffer para mostrar)
 - **Classes de uso**: Gráfico das classes encontradas
 - **Métricas detalhadas**: cada métrica aparece em sua própria seção conforme é calculada, com gráfico de barras por classe + tabela, além da tabela consolidada com 12+ métricas
 - **Download**: CSV das métricas e, se o GeoTIFF enviado precisou ser reprojetado automaticamente, também o raster convertido
@@ -223,12 +227,16 @@ Escolha entre:
 
 - Um resumo compacto por arquivo (mapa de classes + tabela), em painéis expansíveis
 - Uma seção de **comparação entre arquivos**: um gráfico de linha por métrica, uma cor por classe de cobertura do solo, no eixo X o ano (ou a ordem de upload)
+- Se 2+ arquivos tiverem ano identificável no nome: uma seção **"🔮 Predição para anos futuros"** — escolha os anos-alvo e veja a projeção da proporção de cada classe (cadeia de Markov), com tabela + gráfico + CSV
 - Botão **"📥 Baixar relatório (HTML)"**: um arquivo autocontido com o resumo de cada arquivo e os gráficos comparativos — abra no navegador e use **Ctrl+P** para salvar como PDF
+
+**Matriz socioecológica (SSE):** assim que você tiver ao menos uma análise salva, a seção **"🧬 Matriz socioecológica (SSE)"** (logo acima do Passo 1) mostra todas as suas análises agregadas numa matriz — anexe um CSV com variáveis socioeconômicas/hidroclimáticas (casadas por município+ano) para enriquecê-la, veja o heatmap de correlação e baixe o CSV combinado.
 
 > ⚠️ Se a extração de dados reais do MapBiomas/Earth Engine falhar (ex.: buffer
 > muito pequeno ou região sem cobertura no asset), o processamento é
 > interrompido com uma mensagem de erro — o app nunca substitui por dados de
-> exemplo. Aumente o raio do buffer ou selecione outro ponto e tente de novo.
+> exemplo. Aumente o raio do buffer, selecione outro ponto/município e tente
+> de novo.
 
 ---
 
@@ -246,9 +254,11 @@ Resumo de cada resultado calculado, onde ele aparece na tela e como levá-lo pra
 | GeoTIFF reprojetado automaticamente (quando o arquivo enviado estava em graus) | Logo abaixo da tabela consolidada, com uma explicação do porquê | Sim | Botão **"📥 Download GeoTIFF reprojetado"** |
 | Resumo por arquivo (modo **multi-arquivo**: 2+ GeoTIFFs) | Um expander por arquivo — mapa + tabela + cards de paisagem | Sim | Incluído no relatório HTML (linha abaixo) |
 | Comparação entre arquivos (modo multi-arquivo) | Seção "📊 Comparação entre arquivos", um gráfico por métrica, uma cor por classe | Sim | Incluído no relatório HTML (linha abaixo) |
+| Predição para anos futuros (Markov, 2+ anos identificados) | Seção "🔮 Predição para anos futuros", logo após a comparação entre arquivos | Sim | Botão **"📥 Download CSV (predição)"** |
 | Relatório completo do modo multi-arquivo | — | — | Botão **"📥 Baixar relatório (HTML)"** — abra no navegador e use **Ctrl+P** pra salvar como PDF |
+| Matriz socioecológica (SSE): todas as suas análises salvas agregadas | Seção "🧬 Matriz socioecológica (SSE)", acima do fluxo de nova análise | Sim (lê direto do histórico salvo) | Botão **"📥 Download CSV (matriz socioecológica)"** |
 
-> Tudo isso passa a existir só depois de clicar em **"🧮 Calcular métricas"** (Seção 5) — nada é calculado automaticamente antes disso.
+> Tudo isso (exceto a matriz socioecológica, que agrega análises já salvas) passa a existir só depois de clicar em **"🧮 Calcular métricas"** (Passo 4) — nada é calculado automaticamente antes disso.
 
 ---
 

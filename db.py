@@ -131,6 +131,22 @@ def init_db() -> None:
             ON metric_results(user_email, created_at)
             """
         )
+        # Colunas adicionadas depois da criação original da tabela (matriz
+        # socioecológica/SSE — ver `_build_sse_matrix` em app.py): SQLite não
+        # tem migração automática, então cada ALTER TABLE é tentado e
+        # ignorado se a coluna já existir (bancos `data/app.db` antigos não
+        # quebram; bancos novos já nascem com elas via a criação acima só
+        # cobrir o schema original — por isso ainda precisam do ALTER).
+        for column_def in (
+            "municipio_codigo TEXT",
+            "municipio_nome TEXT",
+            "municipio_uf TEXT",
+            "ano INTEGER",
+        ):
+            try:
+                conn.execute(f"ALTER TABLE metric_results ADD COLUMN {column_def}")
+            except sqlite3.OperationalError:
+                pass  # coluna já existe
         conn.commit()
 
 
@@ -143,13 +159,24 @@ def save_metric_result(
     buffer_dist: float | None,
     class_metrics_df,
     landscape_metrics: dict,
+    municipio_codigo: str | None = None,
+    municipio_nome: str | None = None,
+    municipio_uf: str | None = None,
+    ano: int | None = None,
 ) -> None:
     """Salva (ou substitui, se a mesma fingerprint já existir para este
     usuário) o resultado de uma análise já processada. `class_metrics_df` é
     serializado com `to_json(orient="split")` (preserva índice/colunas/tipos
     sem perdas); `metric_names_json` guarda a lista exata de colunas
     presentes, para que `get_metric_result` decida hit/miss sem precisar
-    desserializar o DataFrame inteiro."""
+    desserializar o DataFrame inteiro.
+
+    `municipio_codigo`/`municipio_nome`/`municipio_uf`/`ano` só são
+    preenchidos quando a análise usou área de interesse municipal (ver modo
+    "Limite municipal (IBGE)" em app.py) e/ou um ano foi identificável (nome
+    do arquivo, no modo multi-GeoTIFF) — ficam `None` no caminho ponto+buffer
+    de uma única extração. Usados por `_build_sse_matrix` (app.py) para
+    identificar/agregar cada linha da matriz socioecológica."""
     lon, lat = point_lonlat if point_lonlat else (None, None)
     with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.execute(
@@ -158,9 +185,9 @@ def save_metric_result(
                 user_email, fingerprint, label, data_source,
                 point_lon, point_lat, buffer_dist,
                 class_metrics_json, landscape_metrics_json, metric_names_json,
-                created_at
+                created_at, municipio_codigo, municipio_nome, municipio_uf, ano
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_email, fingerprint) DO UPDATE SET
                 label = excluded.label,
                 data_source = excluded.data_source,
@@ -170,7 +197,11 @@ def save_metric_result(
                 class_metrics_json = excluded.class_metrics_json,
                 landscape_metrics_json = excluded.landscape_metrics_json,
                 metric_names_json = excluded.metric_names_json,
-                created_at = excluded.created_at
+                created_at = excluded.created_at,
+                municipio_codigo = excluded.municipio_codigo,
+                municipio_nome = excluded.municipio_nome,
+                municipio_uf = excluded.municipio_uf,
+                ano = excluded.ano
             """,
             (
                 user_email, fingerprint, label, data_source,
@@ -179,6 +210,7 @@ def save_metric_result(
                 json.dumps(landscape_metrics),
                 json.dumps(list(class_metrics_df.columns)),
                 datetime.now(timezone.utc).isoformat(),
+                municipio_codigo, municipio_nome, municipio_uf, ano,
             ),
         )
         conn.commit()
@@ -216,7 +248,10 @@ def list_metric_results(user_email: str, full: bool = False) -> list:
     pelo painel 'Suas análises anteriores'. Por padrão omite os campos JSON
     (podem ser grandes) para manter a listagem barata; passe `full=True` para
     incluí-los (equivalente a chamar `get_metric_result` para cada linha)."""
-    columns = "fingerprint, label, data_source, point_lon, point_lat, buffer_dist, created_at"
+    columns = (
+        "fingerprint, label, data_source, point_lon, point_lat, buffer_dist, created_at, "
+        "municipio_codigo, municipio_nome, municipio_uf, ano"
+    )
     if full:
         columns += ", class_metrics_json, landscape_metrics_json, metric_names_json"
     with closing(sqlite3.connect(DB_PATH)) as conn:

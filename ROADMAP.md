@@ -1,6 +1,6 @@
 # Roadmap — Landscape Metrics Extractor
 
-## Progresso geral: 95%
+## Progresso geral: 96%
 
 | Fase | Descrição | Status | % |
 | --- | --- | --- | --- |
@@ -9,6 +9,7 @@
 | 3 | Credenciais por usuário | ✅ Concluída | 100% |
 | 4 | Deploy (HTTPS) | 🔧 Automatizada (1 comando), falta decisão de infra + execução | 75% |
 | 5 | Motor de métricas de paisagem | ✅ Concluída | 100% |
+| 6 | Área municipal (IBGE), matriz socioecológica (SSE) e predição de anos futuros (Markov) | ✅ Concluída | 100% |
 
 > O percentual mede fases do roadmap entregues. A Fase 4 tem toda a mecânica pronta e
 > automatizada em um único comando ([scripts/deploy.sh](scripts/deploy.sh), usando
@@ -17,7 +18,9 @@
 > hospeda o app pode tomar: qual servidor/domínio usar. Ver "Fase 4 — Deploy" abaixo. A Fase 5
 > (adicionada em 2026-07-07) cobre o motor de cálculo em si — fonte de dados (MapBiomas/GeoTIFF
 > próprio, um ou vários arquivos), reprojeção automática, e a cobertura de métricas do FRAGSTATS
-> (classe + paisagem) — ver "Status atual" abaixo para o detalhamento item a item.
+> (classe + paisagem). A Fase 6 (adicionada em 2026-07-09) cobre área de interesse por limite
+> municipal (IBGE), a matriz socioecológica (SSE) e a predição de anos futuros via cadeia de
+> Markov — ver "Status atual" abaixo para o detalhamento item a item.
 
 ## Status atual (2026-07-04)
 
@@ -233,6 +236,67 @@
   diziam só "calculando métricas...", sem indicar quantas. Agora aparecem contagens explícitas em
   todo o fluxo — ex.: "Calculando 20 métricas por classe + 10 métricas de nível de paisagem (30 no
   total)...", "Calculando (3/20): ...", cabeçalho "🌎 Métricas da paisagem (nível global) — 10/10:".
+- **Área de interesse por limite municipal via IBGE (2026-07-09)**: a Seção 1 do fluxo ("Área de
+  interesse") ganhou uma segunda opção além de ponto+buffer: "🏘️ Limite municipal (IBGE)" — dois
+  seletores (UF → município, via API de localidades do IBGE) buscam o polígono oficial do
+  município na API de malhas territoriais do IBGE (`_ibge_get_ufs`/`_ibge_get_municipios`/
+  `_ibge_get_municipio_geojson` em [app.py](app.py), todas com `st.cache_data` de 24h) e mostram um
+  preview do limite num mapa folium antes do cálculo. Sem slider de buffer nesse modo — a área é o
+  limite municipal inteiro. Funciona com as duas fontes de dados: no MapBiomas/Earth Engine, o
+  polígono vira a `ee.Geometry` da região (no lugar do buffer circular); no GeoTIFF próprio,
+  `extract_landscape_from_tif` ganhou o parâmetro `region_geojson` — generaliza o recorte (antes só
+  um buffer circular ao redor de um ponto) para aceitar qualquer polígono, incluindo a lógica de
+  reprojeção automática para CRS geográfico (a janela de recorte pré-reprojeção agora usa o
+  bounding box do município em vez de `lon/lat ± margem`). Segue a mesma regra de "nunca fabricar
+  dado" do resto do app: se a API do IBGE falhar, o fluxo pára com uma mensagem explicando a causa
+  em vez de inventar um limite. `db.metric_results` ganhou colunas `municipio_codigo`/
+  `municipio_nome`/`municipio_uf`/`ano` (migração via `ALTER TABLE` defensivo em `init_db`) para
+  identificar essas análises no histórico e na matriz socioecológica (abaixo). Coberto por
+  `tests/test_app_ibge.py`.
+- **Predição de anos futuros via cadeia de Markov (2026-07-09)**: nova subseção "🔮 Predição para
+  anos futuros" dentro da comparação entre múltiplos GeoTIFFs (2+ anos identificados pelo nome do
+  arquivo, calculados na mesma sessão — não a partir do cache, que só guarda os valores das
+  métricas, não os pixels). `_build_transition_matrix` (app.py) monta a matriz de transição
+  classe-a-classe somando as transições pixel-a-pixel de todos os pares de anos consecutivos
+  disponíveis (reamostra por nearest-neighbor via `scipy.ndimage.zoom` quando dois arquivos têm
+  shapes diferentes); `_project_future_landcover` projeta a proporção de cada classe para os anos
+  informados pelo usuário via potência fracionária da matriz (`scipy.linalg.fractional_matrix_power`
+  — o "passo" é o intervalo médio entre os anos históricos disponíveis). Resultado: tabela +
+  gráfico Altair (linha sólida para o histórico observado, tracejada para a projeção, ancorada no
+  último ano observado para não deixar um salto visual) + CSV para download. Método explicitamente
+  não-espacial (só projeta proporções agregadas, não um mapa futuro) e assume estacionariedade das
+  probabilidades de transição — avisos claros na própria UI. Escopo desta primeira versão:
+  multi-arquivo GeoTIFF apenas (não uma extração multi-ano automática via MapBiomas/Earth Engine,
+  que exigiria N chamadas adicionais ao GEE por análise — possível melhoria futura). Coberto por
+  `tests/test_app_markov.py`.
+- **Matriz socioecológica — SSE (2026-07-09)**: nova seção "🧬 Matriz socioecológica (SSE)",
+  visível assim que o usuário tem pelo menos uma análise salva. `_build_sse_matrix` (app.py) agrega
+  TODO o histórico já persistido em `db.metric_results` (não só a análise atual) numa única matriz
+  multivariada — uma linha por análise salva, colunas = proporção de área por classe (wide) +
+  métricas de nível de paisagem (SHDI, CONTAG etc.) + identificação (label, fonte, município/UF/ano,
+  data). O usuário pode anexar um CSV próprio com variáveis socioeconômicas/hidroclimáticas
+  (`municipio_codigo` ou `municipio_nome` + opcionalmente `ano` como chave de junção — qualquer
+  outra coluna é livre), casado via `pd.merge(how="left")`; linhas sem correspondência ficam com as
+  colunas externas vazias (nunca um valor inventado) e a UI reporta quantas linhas casaram. Quando
+  há município identificado, a matriz é enriquecida automaticamente com população estimada do IBGE
+  (`_ibge_get_populacao_estimada`, agregado SIDRA 6579 — melhor esforço, `None` silencioso se a
+  busca falhar). Inclui um heatmap de correlação (Altair, par diverging vermelho↔azul com meio-tom
+  cinza, validado pela skill de dataviz do projeto) entre as colunas numéricas, e download em CSV.
+  Coberto por `tests/test_app_sse.py`.
+- **Correções de UX/UI (2026-07-09)**: revisão do app inteiro identificou dois problemas
+  recorrentes, corrigidos nesta sessão — (1) vários cabeçalhos usavam
+  `color:black; background-color:yellow/lightgreen` **hardcoded** (`_render_landscape_metrics` e
+  várias seções de `main()`), o que ficava ilegível/destoante no tema escuro do Streamlit (o bloco
+  continuava claro mesmo com o resto da UI escura); substituídos por um helper único
+  `_section_header` (borda colorida à esquerda, sem cor de texto/fundo fixa — herda o tema ativo do
+  usuário), e os títulos principais (`main()`/`auth.render_landing_page`) passaram a usar
+  `st.title`/`st.info` nativos no lugar de HTML com `color:Blue`/caixa verde fixa. (2)
+  `_render_metric_chart` tinha dois parágrafos longos ("Análise Detalhada"/"Considerações Finais")
+  praticamente idênticos repetidos a cada uma das 12 métricas reveladas progressivamente — texto
+  genérico que não mudava com os dados, só ruído/scroll sem informação nova; substituído por uma
+  linha curta e factual (classe com maior/menor valor da métrica). A numeração das seções do fluxo
+  principal foi ajustada para acomodar a nova Seção 1 (ponto vs. município): 1) Área de interesse →
+  2) Fonte dos dados → 3) Buffer (só modo ponto) → 4) Calcular métricas.
 
 ### 🔄 Mudança de arquitetura (2026-07-04): login por e-mail/senha + JWT, com Google OAuth opcional
 

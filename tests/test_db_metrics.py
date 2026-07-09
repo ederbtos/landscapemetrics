@@ -100,3 +100,28 @@ def test_save_metric_result_stores_point_lonlat_and_buffer(temp_db):
     assert result["point_lon"] == pytest.approx(-47.9292)
     assert result["point_lat"] == pytest.approx(-15.7801)
     assert result["buffer_dist"] == 5000
+
+
+def test_save_metric_result_stores_municipio_and_ano(temp_db):
+    df = _class_metrics_df()
+    temp_db.save_metric_result(
+        "user@example.com", "fp1", "Goiânia/GO", "MapBiomas (Google Earth Engine)",
+        None, None, df, {},
+        municipio_codigo="5208707", municipio_nome="Goiânia", municipio_uf="GO", ano=2020,
+    )
+    result = temp_db.list_metric_results("user@example.com")[0]
+    assert result["municipio_codigo"] == "5208707"
+    assert result["municipio_nome"] == "Goiânia"
+    assert result["municipio_uf"] == "GO"
+    assert result["ano"] == 2020
+
+
+def test_save_metric_result_municipio_fields_default_to_none(temp_db):
+    df = _class_metrics_df()
+    temp_db.save_metric_result(
+        "user@example.com", "fp1", "arquivo.tif", "Meu raster (GeoTIFF)", None, None, df, {},
+    )
+    result = temp_db.list_metric_results("user@example.com")[0]
+    assert result["municipio_codigo"] is None
+    assert result["municipio_nome"] is None
+    assert result["ano"] is None

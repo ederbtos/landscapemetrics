@@ -154,10 +154,7 @@ def render_landing_page() -> None:
     col1, col2 = st.columns([2, 3])
 
     with col1:
-        st.markdown(
-            '<h1 style="color:Blue">🏞️ Landscape Metrics Extractor</h1>',
-            unsafe_allow_html=True,
-        )
+        st.title("🏞️ Landscape Metrics Extractor")
         st.caption(
             "Powered by MapBiomas, Pylandstats, Google Earth Engine and Geemap | "
             "Developed by Pedro Higuchi ([@pe_hi](https://twitter.com/pe_hi))"
@@ -165,12 +162,9 @@ def render_landing_page() -> None:
         st.caption("Contato: higuchip@gmail.com")
 
     with col2:
-        st.markdown(
-            "<h4 style=' color: black; background-color:lightgreen; padding:25px; "
-            "border-radius: 25px; box-shadow: 0 0 0.1em black'>Aplicativo Web para extração de "
-            "métricas de paisagem de pontos de interesse a partir da base de dados do "
-            "MapBiomas</h4>",
-            unsafe_allow_html=True,
+        st.info(
+            "Aplicativo Web para extração de métricas de paisagem de pontos ou "
+            "municípios de interesse a partir da base de dados do MapBiomas"
         )
 
     st.markdown("---")
