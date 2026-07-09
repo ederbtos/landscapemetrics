@@ -691,11 +691,48 @@ def _render_metric_chart(values: "pd.Series", metric_label: str):
             alt.Tooltip("Valor:Q", title=metric_label, format=",.2f"),
         ],
     )
-    labels = bars.mark_text(align="left", dx=4, color="#52514e").encode(
+    labels = bars.mark_text(align="left", dx=4, color="#52514e", fontSize=14, fontWeight="bold").encode(
         text=alt.Text("Valor:Q", format=",.1f")
     )
-    chart = (bars + labels).properties(height=max(28 * len(df), 60))
+    chart = (bars + labels).properties(height=max(35 * len(df), 80)).configure_axis(
+        labelFontSize=13,
+        titleFontSize=15,
+        labelLimit=300
+    )
+
+    st.markdown(f"""
+    **Análise Detalhada:**
+    
+    A métrica apresentada desempenha um papel fundamental na compreensão da estrutura espacial e da ecologia da paisagem analisada.
+    Neste contexto, podemos observar a distribuição dos valores para cada classe de cobertura do solo mapeada na região de estudo.
+    A análise cuidadosa destes padrões permite identificar quais classes dominam a paisagem em termos de área, fragmentação ou isolamento,
+    dependendo da métrica específica sendo avaliada. Em estudos ecológicos, métricas de composição (como área e proporção)
+    ajudam a entender a disponibilidade de habitat, enquanto métricas de configuração (como densidade de borda e isolamento)
+    fornecem insights sobre a conectividade e os possíveis efeitos de borda sobre a biodiversidade local.
+    É importante considerar o contexto histórico e as pressões antrópicas que podem ter moldado esta configuração atual da paisagem.
+    Alterações contínuas, como desmatamento ou expansão urbana, frequentemente se refletem em mudanças abruptas nestas métricas espaciais,
+    aumentando a fragmentação estrutural e reduzindo a viabilidade de populações de espécies especialistas.
+    Portanto, os resultados quantitativos aqui apresentados servem como base sólida e metodológica para subsidiar estratégias de conservação,
+    planejamento territorial e tomadas de decisão voltadas para a sustentabilidade e o manejo adequado dos recursos naturais na bacia ou região de interesse.
+    """)
+
     st.altair_chart(chart, use_container_width=True)
+
+    st.markdown(f"""
+    **Considerações Finais sobre a Métrica:**
+    
+    Observando os resultados consolidados no gráfico acima, evidencia-se a heterogeneidade inerente à paisagem estudada.
+    Cada barra representa o valor calculado para a respectiva classe, permitindo uma comparação visual direta de sua representatividade e estado estrutural.
+    Classes com valores extremos frequentemente indicam elementos de destaque na paisagem, seja por sua dominância como matriz ou por sua alta vulnerabilidade devido à intensa fragmentação.
+    A interpretação ecológica contínua desses dados sugere que a matriz da paisagem e seus respectivos fragmentos remanescentes estão em um estado dinâmico,
+    potencialmente influenciado por regimes de perturbação naturais ou por crescentes intervenções humanas no uso do solo.
+    Tais informações descritivas são indispensáveis para a construção de um diagnóstico ambiental preciso e fundamentado,
+    que vá além da mera quantificação espacial e alcance a compreensão profunda dos processos ecológicos em curso.
+    Recomenda-se que estes dados estruturais sejam cruzados com outras variáveis ambientais da região, como topografia, hidrografia e infraestrutura de transporte,
+    para uma avaliação integrada e holística. Em síntese, a métrica espacial calculada reflete a complexidade do arranjo e da configuração espacial,
+    sendo um indicativo claro de como a organização física do território pode limitar, dificultar ou favorecer a manutenção da biodiversidade
+    e o provimento contínuo de serviços ecossistêmicos vitais para o bem-estar da sociedade e resiliência da região.
+    """)
 
 
 # Paleta categórica validada (skill de dataviz) — ordem fixa, usada para
