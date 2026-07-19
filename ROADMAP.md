@@ -9,7 +9,7 @@
 | 3 | Credenciais por usuário | ✅ Concluída | 100% |
 | 4 | Deploy (HTTPS) | 🔧 Automatizada (1 comando), falta decisão de infra + execução | 75% |
 | 5 | Motor de métricas de paisagem | ✅ Concluída | 100% |
-| 6 | Área municipal (IBGE), matriz socioecológica (SSE) e predição de anos futuros (Markov) | ✅ Concluída | 100% |
+| 6 | Área municipal (IBGE), matriz socioecológica (SSE), predição de anos futuros (Markov) e lote por município via shapefile | ✅ Concluída | 100% |
 
 > O percentual mede fases do roadmap entregues. A Fase 4 tem toda a mecânica pronta e
 > automatizada em um único comando ([scripts/deploy.sh](scripts/deploy.sh), usando
@@ -297,6 +297,43 @@
   linha curta e factual (classe com maior/menor valor da métrica). A numeração das seções do fluxo
   principal foi ajustada para acomodar a nova Seção 1 (ponto vs. município): 1) Área de interesse →
   2) Fonte dos dados → 3) Buffer (só modo ponto) → 4) Calcular métricas.
+- **Métricas por município em lote via shapefile (2026-07-17)**: nova seção independente "📦
+  Métricas por município (lote via shapefile)" (`_render_municipio_batch_section`, entre a Matriz
+  SSE e a Seção 1 do fluxo de análise única) — cobre o caso de uso de ter o shapefile de municípios
+  do IBGE (ex.: todos os municípios de uma UF) e um GeoTIFF próprio, e querer as métricas de
+  fragmentação de TODOS os municípios de uma vez, em vez de rodar a análise de município único
+  (Fase 6, item acima) manualmente para cada um. Escopo desta primeira versão: só GeoTIFF próprio
+  (não MapBiomas/GEE — exigiria 1 chamada ao Earth Engine por município, potencialmente centenas
+  por lote). Detalhes:
+  - **Autodetecção de colunas**: shapefiles de municípios variam o nome das colunas de
+    identificação entre fontes/anos; `_detect_municipio_columns` casa (case-insensitive) contra
+    nomes comuns da malha do IBGE (`CD_MUN`/`NM_MUN`/`SIGLA_UF` e variantes) e pré-seleciona os
+    `st.selectbox` de código/nome (obrigatórios) e UF (opcional) — sempre editáveis na UI caso a
+    detecção erre.
+  - **Reuso do pipeline de GeoTIFF sem reescrever o arquivo por município**:
+    `extract_landscape_from_tif` foi dividida em `_save_uploaded_tif_to_temp` (salva o arquivo uma
+    vez) e `_clip_raster_at_path` (recorta/reprojeta a partir de um caminho já salvo em disco) —
+    refactor que preserva o comportamento e a assinatura públicos (confirmado pelos testes
+    existentes de `test_app_tif.py`/`test_app_ibge.py`, sem alteração). `_run_municipio_batch`
+    chama `_save_uploaded_tif_to_temp` uma única vez e `_clip_raster_at_path` uma vez por
+    município, em vez de reabrir/reescrever o mesmo GeoTIFF centenas de vezes.
+  - **Isolamento de erro por município**: diferente da regra "nunca fabricar dado" do resto do app
+    (que interrompe todo o processamento se a extração falhar), aqui uma falha num único município
+    (ex.: polígono fora da extensão do raster) não derruba o lote inteiro — vira uma linha na lista
+    de erros exibida na UI, e o lote segue para o próximo município. Nenhuma métrica é inventada;
+    municípios com erro simplesmente não geram linha na planilha de saída.
+  - **Cache reaproveitado**: cada município processado é salvo via `db.save_metric_result` (mesma
+    fingerprint de `_compute_fingerprint`, variando `municipio_codigo`), então uma nova execução do
+    mesmo lote (ex.: após uma interrupção no meio de centenas de municípios) pula os municípios já
+    calculados — e os resultados também passam a aparecer na Matriz SSE automaticamente, por já
+    usarem o mesmo `municipio_codigo`/`municipio_nome`/`municipio_uf` daquela tabela.
+  - **Saída**: planilha `.xlsx` com 2 abas (`_build_municipio_batch_workbook`) — "paisagem" (1
+    linha por município, métricas de nível de paisagem) e "classe" (formato longo, 1 linha por
+    combinação município+classe) — formato escolhido para não explodir em centenas de colunas
+    (uma aba "larga" por classe×métrica). CSVs de cada aba também disponíveis como alternativa.
+    Nova dependência: `openpyxl` (`requirements.txt`).
+  - Coberto por `tests/test_app_municipio_batch.py` (detecção de colunas, processamento em lote com
+    isolamento de erro, reuso de cache, montagem da planilha).
 
 ### 🔄 Mudança de arquitetura (2026-07-04): login por e-mail/senha + JWT, com Google OAuth opcional
 

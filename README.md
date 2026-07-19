@@ -257,8 +257,9 @@ Resumo de cada resultado calculado, onde ele aparece na tela e como levá-lo pra
 | Predição para anos futuros (Markov, 2+ anos identificados) | Seção "🔮 Predição para anos futuros", logo após a comparação entre arquivos | Sim | Botão **"📥 Download CSV (predição)"** |
 | Relatório completo do modo multi-arquivo | — | — | Botão **"📥 Baixar relatório (HTML)"** — abra no navegador e use **Ctrl+P** pra salvar como PDF |
 | Matriz socioecológica (SSE): todas as suas análises salvas agregadas | Seção "🧬 Matriz socioecológica (SSE)", acima do fluxo de nova análise | Sim (lê direto do histórico salvo) | Botão **"📥 Download CSV (matriz socioecológica)"** |
+| Métricas por município em lote (shapefile de municípios + 1 GeoTIFF) | Seção "📦 Métricas por município (lote via shapefile)", acima do fluxo de nova análise | Sim | Botão **"📥 Download planilha (.xlsx)"** (abas "paisagem"/"classe") ou os 2 botões de CSV equivalentes |
 
-> Tudo isso (exceto a matriz socioecológica, que agrega análises já salvas) passa a existir só depois de clicar em **"🧮 Calcular métricas"** (Passo 4) — nada é calculado automaticamente antes disso.
+> Tudo isso (exceto a matriz socioecológica e o lote por município, que rodam em seções próprias) passa a existir só depois de clicar em **"🧮 Calcular métricas"** (Passo 4) — nada é calculado automaticamente antes disso.
 
 ---
 
