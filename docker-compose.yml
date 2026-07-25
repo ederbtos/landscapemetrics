@@ -1,9 +1,16 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      JWT_SECRET_KEY: dev-jwt-secret-change-me
+      APP_ENCRYPTION_KEY: dev-encryption-key-change-me
+      CORS_ORIGINS: http://localhost:8000
+      COOKIE_SECURE: "false"
+      DB_PATH: data/app.db
     ports:
-      - "8501:8501"
+      - "8000:8000"
     volumes:
-      - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
       - ./data:/app/data
     restart: unless-stopped

@@ -109,6 +109,8 @@ from pathlib import Path
 
 import auth
 import db
+import clustering
+
 
 # Correção de ambiente (Windows): se houver uma variável de ambiente PROJ_LIB
 # global (comum em máquinas com PostgreSQL/PostGIS instalado — o instalador
@@ -1916,26 +1918,156 @@ def _render_sse_matrix_section(user_email: str) -> None:
 
     st.dataframe(sse_matrix, use_container_width=True)
 
+    # Seção de Agrupamento Multivariado (Clustering: K-Means & DBSCAN)
     numeric_cols = sse_matrix.select_dtypes(include=[np.number]).columns.tolist()
-    if len(numeric_cols) >= 2:
-        with st.expander("🔥 Correlação entre variáveis (mapa de calor)", expanded=False):
-            corr = sse_matrix[numeric_cols].corr()
-            corr_long = corr.reset_index(names="variavel_1").melt(
-                id_vars="variavel_1", var_name="variavel_2", value_name="correlacao"
+    if len(numeric_cols) >= 1 and len(sse_matrix) >= 2:
+        with st.expander("🤖 Agrupamento & Análise de Clusters (K-Means & DBSCAN)", expanded=False):
+            st.markdown(
+                "Agrupe suas paisagens e municípios por similaridade estatística utilizando "
+                "algoritmos de machine learning não supervisionado."
             )
-            # Par diverging vermelho↔azul com meio-tom neutro cinza (ver skill de
-            # dataviz, references/palette.md § Diverging pair) — não a paleta
-            # categórica (CATEGORICAL_PALETTE), que é para identidade, não polaridade.
-            heatmap = alt.Chart(corr_long).mark_rect().encode(
-                x=alt.X("variavel_1:N", title=None),
-                y=alt.Y("variavel_2:N", title=None),
-                color=alt.Color(
-                    "correlacao:Q", title="Correlação",
-                    scale=alt.Scale(domain=[-1, 0, 1], range=["#e34948", "#f0efec", "#2a78d6"]),
-                ),
-                tooltip=["variavel_1", "variavel_2", alt.Tooltip("correlacao:Q", format=",.2f")],
-            ).properties(height=max(25 * len(numeric_cols), 200))
-            st.altair_chart(heatmap, use_container_width=True)
+            feature_options = [c for c in numeric_cols if c not in ["ano", "municipio_codigo"]]
+            selected_features = st.multiselect(
+                "Selecione as variáveis para o agrupamento:",
+                options=numeric_cols,
+                default=feature_options if feature_options else numeric_cols,
+                key="sse_cluster_features",
+            )
+
+            if not selected_features:
+                st.warning("⚠️ Selecione pelo menos uma variável numérica para realizar o agrupamento.")
+            else:
+                algo_choice = st.radio(
+                    "Algoritmo de Agrupamento:",
+                    ["K-Means", "DBSCAN"],
+                    horizontal=True,
+                    key="sse_cluster_algo_choice",
+                )
+
+                if algo_choice == "K-Means":
+                    c_col1, c_col2 = st.columns([1, 1])
+                    with c_col1:
+                        max_k_slider = max(3, min(10, len(sse_matrix)))
+                        k_val = st.slider(
+                            "Número de clusters (K):",
+                            min_value=2,
+                            max_value=max_k_slider,
+                            value=min(3, max_k_slider),
+                            key="sse_kmeans_k",
+                        )
+                    with c_col2:
+                        show_elbow = st.checkbox(
+                            "Exibir curva do Método do Cotovelo (Elbow) & Silhouette Score",
+                            key="sse_kmeans_elbow",
+                        )
+
+                    kmeans_res = clustering.run_kmeans(sse_matrix, selected_features, k=k_val)
+                    sse_matrix["cluster_kmeans"] = kmeans_res["df"]["cluster_kmeans"]
+
+                    sil_str = (
+                        f"{kmeans_res['silhouette']:.3f}"
+                        if kmeans_res["silhouette"] is not None
+                        else "N/A (amostras insuficientes)"
+                    )
+                    st.info(f"📊 **K-Means concluído**: {kmeans_res['k']} clusters formados • **Silhouette Score**: {sil_str}")
+
+                    if show_elbow:
+                        elbow_df = clustering.compute_elbow_curve(
+                            sse_matrix, selected_features, max_k=min(10, len(sse_matrix))
+                        )
+                        if not elbow_df.empty:
+                            el_c1, el_c2 = st.columns(2)
+                            with el_c1:
+                                el_chart = alt.Chart(elbow_df).mark_line(point=True).encode(
+                                    x=alt.X("k:O", title="Número de Clusters (K)"),
+                                    y=alt.Y("inertia:Q", title="Inércia (Soma dos Erros Quadráticos)"),
+                                    tooltip=["k", alt.Tooltip("inertia:Q", format=",.2f")],
+                                ).properties(height=220, title="Método do Cotovelo (Inércia)")
+                                st.altair_chart(el_chart, use_container_width=True)
+                            with el_c2:
+                                sil_chart = alt.Chart(elbow_df.dropna(subset=["silhouette"])).mark_line(point=True, color="#2a78d6").encode(
+                                    x=alt.X("k:O", title="Número de Clusters (K)"),
+                                    y=alt.Y("silhouette:Q", title="Silhouette Score"),
+                                    tooltip=["k", alt.Tooltip("silhouette:Q", format=",.3f")],
+                                ).properties(height=220, title="Qualidade de Separação (Silhouette)")
+                                st.altair_chart(sil_chart, use_container_width=True)
+
+                    pca_df = kmeans_res["pca_df"]
+                    if not pca_df.empty and "pca_1" in pca_df.columns and "pca_2" in pca_df.columns:
+                        st.markdown("#### Visualização 2D (Análise de Componentes Principais - PCA)")
+                        pca_chart = alt.Chart(pca_df).mark_circle(size=80).encode(
+                            x=alt.X("pca_1:Q", title="Componente Principal 1 (PCA 1)"),
+                            y=alt.Y("pca_2:Q", title="Componente Principal 2 (PCA 2)"),
+                            color=alt.Color("cluster_kmeans:N", title="Cluster"),
+                            tooltip=[
+                                alt.Tooltip("cluster_kmeans:N", title="Cluster"),
+                                alt.Tooltip("label:N", title="Rótulo"),
+                                alt.Tooltip("municipio_nome:N", title="Município"),
+                                alt.Tooltip("ano:N", title="Ano"),
+                            ],
+                        ).properties(height=350)
+                        st.altair_chart(pca_chart, use_container_width=True)
+
+                    if not kmeans_res["cluster_profiles"].empty:
+                        st.markdown("#### Perfil médio das variáveis por Cluster")
+                        st.dataframe(kmeans_res["cluster_profiles"], use_container_width=True)
+
+                else:  # DBSCAN
+                    db_col1, db_col2 = st.columns(2)
+                    with db_col1:
+                        eps_val = st.slider(
+                            "Raio de vizinhança (eps):",
+                            min_value=0.1,
+                            max_value=3.0,
+                            value=0.8,
+                            step=0.1,
+                            key="sse_dbscan_eps",
+                        )
+                    with db_col2:
+                        max_samples_slider = max(2, len(sse_matrix))
+                        min_samples_val = st.slider(
+                            "Mínimo de amostras por cluster (min_samples):",
+                            min_value=1,
+                            max_value=max_samples_slider,
+                            value=min(2, max_samples_slider),
+                            key="sse_dbscan_min_samples",
+                        )
+
+
+                    dbscan_res = clustering.run_dbscan(
+                        sse_matrix, selected_features, eps=eps_val, min_samples=min_samples_val
+                    )
+                    sse_matrix["cluster_dbscan"] = dbscan_res["df"]["cluster_dbscan"]
+
+                    st.info(
+                        f"📊 **DBSCAN concluído**: {dbscan_res['n_clusters']} cluster(s) denso(s) encontrado(s) • "
+                        f"{dbscan_res['n_noise']} ponto(s) de ruído/outlier rotulado(s)"
+                    )
+
+                    pca_df = dbscan_res["pca_df"]
+                    if not pca_df.empty and "pca_1" in pca_df.columns and "pca_2" in pca_df.columns:
+                        st.markdown("#### Visualização 2D (PCA) com detecção de Ruídos/Outliers")
+                        pca_chart = alt.Chart(pca_df).mark_circle(size=80).encode(
+                            x=alt.X("pca_1:Q", title="Componente Principal 1 (PCA 1)"),
+                            y=alt.Y("pca_2:Q", title="Componente Principal 2 (PCA 2)"),
+                            color=alt.Color("cluster_dbscan:N", title="Cluster / Outlier"),
+                            tooltip=[
+                                alt.Tooltip("cluster_dbscan:N", title="Cluster"),
+                                alt.Tooltip("label:N", title="Rótulo"),
+                                alt.Tooltip("municipio_nome:N", title="Município"),
+                                alt.Tooltip("ano:N", title="Ano"),
+                            ],
+                        ).properties(height=350)
+                        st.altair_chart(pca_chart, use_container_width=True)
+
+                    if not dbscan_res["cluster_profiles"].empty:
+                        st.markdown("#### Perfil médio das variáveis por Cluster / Ruído")
+                        st.dataframe(dbscan_res["cluster_profiles"], use_container_width=True)
+
+        # ---------------------------------------------------------------------
+        # Aprendizado Supervisionado & Validação Cruzada Espacial (Spatial K-Fold)
+        # ---------------------------------------------------------------------
+        _render_supervised_section(sse_matrix)
 
     sse_csv_bytes = sse_matrix.to_csv(sep=";", decimal=",", index=False).encode("utf-8")
     st.download_button(
@@ -1946,6 +2078,130 @@ def _render_sse_matrix_section(user_email: str) -> None:
         key="download-sse-csv",
         use_container_width=True,
     )
+
+
+def _render_supervised_section(sse_matrix: pd.DataFrame) -> None:
+    """Renderiza a seção de Aprendizado Supervisionado com Random Forest, XGBoost e LightGBM,
+    Validação Cruzada Espacial (Spatial K-Fold), AUC-ROC, F1-Score, Matriz de Confusão e
+    Importância por Permutação."""
+    import supervised_models
+
+    with st.expander("🎯 Aprendizado Supervisionado & Validação Espacial (Spatial K-Fold)", expanded=False):
+        st.caption(
+            "Treine modelos de classificação (**Random Forest**, **XGBoost** e **LightGBM**) com "
+            "**Validação Cruzada Espacial (*Spatial K-Fold*)** para evitar contaminação por autocorrelação espacial. "
+            "Avalie **AUC-ROC**, **F1-Score**, **Matriz de Confusão** e **Importância de Variáveis por Permutação**."
+        )
+
+        all_cols = list(sse_matrix.columns)
+        numeric_cols = list(sse_matrix.select_dtypes(include=[np.number]).columns)
+
+        if len(sse_matrix) < 4:
+            st.warning("⚠️ É necessário ter pelo menos 4 análises salvas para executar a Validação Cruzada Espacial.")
+            return
+
+        sup_col1, sup_col2, sup_col3 = st.columns(3)
+        with sup_col1:
+            target_col = st.selectbox(
+                "Variável Alvo (Target):",
+                options=all_cols,
+                index=0 if "pct_Floresta" not in all_cols else all_cols.index("pct_Floresta"),
+                key="sup_target_col",
+            )
+        with sup_col2:
+            model_choice = st.selectbox(
+                "Modelo Supervisionado:",
+                options=["Random Forest (Principal)", "XGBoost (Principal)", "LightGBM (Secundário / Comparativo)"],
+                index=0,
+                key="sup_model_choice",
+            )
+        with sup_col3:
+            n_splits_val = st.slider(
+                "Número de Dobras Espaciais (Folds):",
+                min_value=2,
+                max_value=max(2, min(10, len(sse_matrix))),
+                value=min(3, len(sse_matrix)),
+                key="sup_n_splits",
+            )
+
+        model_code = (
+            "random_forest"
+            if "Random Forest" in model_choice
+            else "xgboost"
+            if "XGBoost" in model_choice
+            else "lightgbm"
+        )
+
+        default_predictors = [c for c in numeric_cols if c != target_col]
+        selected_predictors = st.multiselect(
+            "Variáveis Preditoras (Features):",
+            options=[c for c in all_cols if c != target_col],
+            default=default_predictors[:5] if len(default_predictors) >= 5 else default_predictors,
+            key="sup_selected_predictors",
+        )
+
+        if st.button("⚡ Treinar Modelo & Validar Espacialmente", key="btn_train_sup"):
+            if not selected_predictors:
+                st.error("Selecione pelo menos 1 variável preditora.")
+                return
+
+            with st.spinner("Treinando modelo e calculando validação espacial..."):
+                res = supervised_models.train_supervised_model(
+                    sse_matrix,
+                    selected_predictors,
+                    target_col,
+                    model_name=model_code,
+                    n_splits=n_splits_val,
+                )
+
+            if "error" in res:
+                st.error(f"Erro: {res['error']}")
+                return
+
+            st.success(f"✅ Modelo **{model_choice.split(' ')[0]}** treinado com **{res['n_splits']} dobras espaciais**!")
+
+            # Métricas de Avaliação
+            m_col1, m_col2, m_col3 = st.columns(3)
+            with m_col1:
+                auc_str = f"{res['auc_roc']:.3f}" if res["auc_roc"] is not None else "N/A"
+                st.metric("AUC-ROC", auc_str)
+            with m_col2:
+                st.metric("F1-Score (Ponderado)", f"{res['f1_score']:.3f}")
+            with m_col3:
+                st.metric("Amostras Avaliadas", f"{res['n_samples']}")
+
+            # Matriz de Confusão & Permutation Importance
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### Matriz de Confusão (Acumulada das Dobras Espaciais)")
+                cm_df = pd.DataFrame(
+                    res["confusion_matrix"],
+                    columns=[f"Previsto Classe {i}" for i in range(len(res["confusion_matrix"]))],
+                    index=[f"Real Classe {i}" for i in range(len(res["confusion_matrix"]))],
+                )
+                st.dataframe(cm_df, use_container_width=True)
+
+            with c2:
+                st.markdown("#### Importância de Variáveis por Permutação (*Permutation Importance*)")
+                imp_dict = res["permutation_importance"]
+                if imp_dict:
+                    imp_df = pd.DataFrame(
+                        list(imp_dict.items()), columns=["Variável", "Importância (Queda Média)"]
+                    )
+                    chart = (
+                        alt.Chart(imp_df)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Importância (Queda Média):Q", title="Queda Média na Acurácia ao Permutar"),
+                            y=alt.Y("Variável:N", sort="-x", title="Variável Preditora"),
+                            color=alt.value("#10b981"),
+                            tooltip=["Variável", alt.Tooltip("Importância (Queda Média):Q", format=".4f")],
+                        )
+                        .properties(height=220)
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+
+
 
 
 def _render_municipio_batch_section(user_email: str) -> None:

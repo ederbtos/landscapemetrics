@@ -80,3 +80,19 @@ def test_render_sse_matrix_section_does_not_raise_with_history(temp_db):
         "user@example.com", "fp1", "a", "MapBiomas (Google Earth Engine)", None, None, df, {},
     )
     app._render_sse_matrix_section("user@example.com")  # só garante que não levanta exceção
+
+
+def test_render_sse_matrix_section_with_multiple_entries_executes_clustering_section(temp_db):
+    df1 = _class_metrics_df({"Floresta": 80.0, "Pastagem": 20.0})
+    df2 = _class_metrics_df({"Floresta": 10.0, "Pastagem": 90.0})
+    temp_db.save_metric_result(
+        "user@example.com", "fp1", "Ponto A", "MapBiomas (Google Earth Engine)", None, None, df1, {"shannon_diversity_index": 0.5},
+        municipio_codigo="5208707", municipio_nome="Goiânia", municipio_uf="GO", ano=2020,
+    )
+    temp_db.save_metric_result(
+        "user@example.com", "fp2", "Ponto B", "MapBiomas (Google Earth Engine)", None, None, df2, {"shannon_diversity_index": 0.2},
+        municipio_codigo="5201108", municipio_nome="Anápolis", municipio_uf="GO", ano=2020,
+    )
+    # Garante que renderizar com >1 entrada não gera exceções ao rodar o agrupamento
+    app._render_sse_matrix_section("user@example.com")
+

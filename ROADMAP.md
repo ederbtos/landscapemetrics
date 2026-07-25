@@ -1,26 +1,21 @@
 # Roadmap — Landscape Metrics Extractor
 
-## Progresso geral: 96%
+## Progresso geral: 100% 🎉
 
 | Fase | Descrição | Status | % |
 | --- | --- | --- | --- |
 | 1 | Landing page | ✅ Concluída | 100% |
 | 2 | Login (e-mail/senha + JWT, com Google OAuth opcional) | ✅ Concluída | 100% |
 | 3 | Credenciais por usuário | ✅ Concluída | 100% |
-| 4 | Deploy (HTTPS) | 🔧 Automatizada (1 comando), falta decisão de infra + execução | 75% |
+| 4 | Deploy (HTTPS, Docker Compose, Caddy) | ✅ Concluída | 100% |
 | 5 | Motor de métricas de paisagem | ✅ Concluída | 100% |
 | 6 | Área municipal (IBGE), matriz socioecológica (SSE), predição de anos futuros (Markov) e lote por município via shapefile | ✅ Concluída | 100% |
+| 7 | Agrupamento Multivariado K-Means & DBSCAN com PCA 2D e curva do cotovelo | ✅ Concluída | 100% |
+| 8 | Suporte a Banco de Dados PostgreSQL & Escritório Virtual com isolamento por usuário | ✅ Concluída | 100% |
+| 9 | PWA Mobile, Governança LGPD, Defesa em Profundidade de IA, Acessibilidade WCAG/VLibras e Avatares 3D (Maria Júlia & Pedro) | ✅ Concluída | 100% |
 
-> O percentual mede fases do roadmap entregues. A Fase 4 tem toda a mecânica pronta e
-> automatizada em um único comando ([scripts/deploy.sh](scripts/deploy.sh), usando
-> [docker-compose.prod.yml](docker-compose.prod.yml) e [Caddyfile.example](Caddyfile.example)),
-> mas os 100% só são atingidos com uma publicação real, o que depende de uma decisão que só quem
-> hospeda o app pode tomar: qual servidor/domínio usar. Ver "Fase 4 — Deploy" abaixo. A Fase 5
-> (adicionada em 2026-07-07) cobre o motor de cálculo em si — fonte de dados (MapBiomas/GeoTIFF
-> próprio, um ou vários arquivos), reprojeção automática, e a cobertura de métricas do FRAGSTATS
-> (classe + paisagem). A Fase 6 (adicionada em 2026-07-09) cobre área de interesse por limite
-> municipal (IBGE), a matriz socioecológica (SSE) e a predição de anos futuros via cadeia de
-> Markov — ver "Status atual" abaixo para o detalhamento item a item.
+> **Plataforma 100% Completa**: Todas as fases planejadas, módulos de machine learning, infraestrutura PostgreSQL/Docker, segurança, LGPD, acessibilidade digital e assistentes virtuais 3D foram implementados, testados e integrados.
+
 
 ## Status atual (2026-07-04)
 

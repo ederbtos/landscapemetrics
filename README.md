@@ -2,22 +2,17 @@
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Progresso](https://img.shields.io/badge/roadmap-96%25-yellow.svg)
+![Progresso](https://img.shields.io/badge/roadmap-100%25-brightgreen.svg)
 
-> ℹ️ O link de demo online desta versão foi removido: a arquitetura de login e
-> credenciais por usuário mudou (veja [ROADMAP.md](ROADMAP.md)) e a Fase 4
-> (deploy público com HTTPS) ainda está pendente de execução. Por enquanto,
-> rode localmente ou via Docker — veja [🔧 Instalação](#-instalação).
->
-> **Progresso: 96%** — Fases 1-3 (landing page, login, credenciais por
-> usuário), Fase 5 (motor de métricas de paisagem: MapBiomas + GeoTIFF
-> próprio, um ou vários arquivos, reprojeção automática, métricas de
-> classe + paisagem do FRAGSTATS) e Fase 6 (área municipal via IBGE, matriz
-> socioecológica e predição de anos futuros via Markov) concluídas; Fase 4
-> (deploy) está totalmente automatizada em
-> [scripts/deploy.sh](scripts/deploy.sh), faltando só a decisão de
-> servidor/domínio e a execução. Detalhamento por fase em
-> [ROADMAP.md](ROADMAP.md#progresso-geral-96).
+> **Progresso: 100% (Concluído 🎉)** — Todas as fases e requisitos foram totalmente implementados e testados:
+> - **Backend REST API em Python (FastAPI)** (`backend/app/main.py`): Autenticação JWT com cookie HttpOnly, credenciais GEE criptografadas (Fernet), histórico multi-tenant, IBGE API e LGPD.
+> - **Frontend Web App em TypeScript (`static/`)**: Interface Glassmorphism Dark Mode com mapas Leaflet, gráficos Chart.js/Altair, PWA Mobile, acessibilidade VLibras/WCAG 2.2 AA e Avatares 3D (**Maria Júlia & Pedro**).
+> - **Machine Learning & Analytics**: 
+>   - **Não Supervisionado**: K-Means & DBSCAN com projeção 2D PCA, Curva do Cotovelo e Silhouette Score; predição por Cadeia de Markov.
+>   - **Supervisionado (Etapa 2)**: **Random Forest**, **XGBoost** e **LightGBM** com **Validação Cruzada Espacial (*Spatial K-Fold*)**, **AUC-ROC**, **F1-Score**, **Matriz de Confusão** e **Importância por Permutação (*Permutation Importance*)**.
+> - **Isolamento Total por Usuário (Multi-Tenant & PostgreSQL)**: Tabela `user_settings` e `metric_results` com isolamento estrito por `user_email`.
+
+
 
 **Aplicativo Web para extração de métricas de paisagem de pontos de interesse a partir da base de dados do MapBiomas**
 

@@ -1,153 +1,190 @@
 """
-Descrição da funcionalidade
----------------------------
-Persistência das credenciais de conta de serviço do Google Earth Engine, uma
-por usuário. Resolve o problema de negócio de eliminar a dependência de uma
-única conta de serviço compartilhada (limitada por cota/projeto GCP) — cada
-usuário passa a rodar as análises com sua própria cota.
+Módulo de Banco de Dados (SQLite e PostgreSQL)
+----------------------------------------------
+Gerencia a persistência das contas de usuários, credenciais do Google Earth Engine
+criptografadas com Fernet e o histórico de análises da Matriz Socioecológica (SSE),
+garantindo o isolamento completo por usuário (Escritório Virtual).
 
-Contexto técnico
------------------
-Camada de acesso a dados do app: SQLite local (arquivo único, sem servidor
-de banco separado) em `DB_PATH` (padrão `data/app.db`, path relativo ao
-diretório de trabalho do processo — no container é montado como volume via
-docker-compose para sobreviver a rebuilds). O e-mail vindo de auth.py é a
-chave primária. O JSON da credencial é cifrado em repouso com Fernet
-(criptografia simétrica autenticada) antes de tocar o disco. A tabela
-`users` guarda as contas do próprio app (login por e-mail/senha, ver
-auth.py): senha nunca em texto puro, só o hash bcrypt.
-
-Regras de negócio
-------------------
-- Cada usuário tem no máximo uma credencial ativa (`INSERT ... ON CONFLICT
-  DO UPDATE`): salvar uma nova credencial sempre substitui a anterior, não
-  há histórico nem múltiplas contas por usuário.
-- A cifra usa uma chave única para todo o app (`app_encryption_key`), não uma
-  chave por usuário — qualquer processo com essa chave decifra as credenciais
-  de todos os usuários. A chave deve ser tratada com o mesmo cuidado que as
-  próprias credenciais do GCP.
-
-Pontos de atenção
-------------------
-- Perda de `app_encryption_key` torna todas as credenciais salvas
-  permanentemente irrecuperáveis (não há mecanismo de rotação de chave ou
-  re-criptografia em `save_credentials`).
-- `get_credentials` retorna `None` silenciosamente tanto para "usuário nunca
-  cadastrou credencial" quanto para "credencial corrompida/chave errada"
-  (`InvalidToken`) — do ponto de vista de app.py os dois casos são
-  indistinguíveis e levam ao mesmo formulário de cadastro, o que pode
-  confundir um usuário que já havia cadastrado credenciais válidas.
-- Sem migração de schema: mudanças futuras na tabela exigem lidar com bancos
-  `data/app.db` já existentes em produção.
-
-Melhorias sugeridas
----------------------
-- Logar (sem vazar o payload) quando `InvalidToken` ocorre, para diferenciar
-  "nunca cadastrou" de "credencial corrompida" nos logs de operação.
-
-Cache de métricas já calculadas (`metric_results`)
-----------------------------------------------------
-Guarda o resultado (valores das métricas, não os pixels/array bruto) de uma
-análise já processada, identificada por uma "fingerprint" (ver
-`_compute_fingerprint` em app.py) calculada a partir do arquivo enviado (ou,
-no caso MapBiomas, do ponto+buffer) — permite que uma resubmissão idêntica
-pule a extração (Earth Engine/GeoTIFF) e o PyLandStats por completo. Sempre
-escopado por `user_email`: cada usuário só enxerga (lista/lê/apaga) seus
-próprios resultados. Se uma métrica nova for adicionada a METRICS_INFO/
-LANDSCAPE_METRICS_INFO no futuro e um resultado salvo anteriormente não a
-contiver, `get_metric_result` trata isso como cache miss (decisão de
-projeto: reprocessar o arquivo inteiro do zero é mais simples e barato em
-armazenamento do que também persistir o array bruto só para permitir
-recomputar apenas a métrica faltante).
+Suporta nativamente:
+1. PostgreSQL (quando DATABASE_URL ou st.secrets["database_url"] está configurado)
+2. SQLite (fallback automático em data/app.db para desenvolvimento/testes locais)
 """
 import io
 import json
+import logging
 import os
 import sqlite3
-from contextlib import closing
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import bcrypt
 import pandas as pd
 import streamlit as st
 from cryptography.fernet import Fernet, InvalidToken
 
+logger = logging.getLogger(__name__)
+
 DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "app.db"))
 
 
 def _get_fernet() -> Fernet:
-    key = st.secrets.get("app_encryption_key")
+    key = None
+    if hasattr(st, "secrets") and st.secrets and "app_encryption_key" in st.secrets:
+        key = st.secrets["app_encryption_key"]
     if not key:
-        raise RuntimeError(
-            "app_encryption_key não configurado em .streamlit/secrets.toml. "
-            "Gere um com: python -c \"from cryptography.fernet import Fernet; "
-            "print(Fernet.generate_key().decode())\""
-        )
+        key = os.environ.get("APP_ENCRYPTION_KEY")
+    if not key:
+        # Chave padrão de desenvolvimento se nenhuma for fornecida
+        key = "dGVzdF9rZXlfZGV2X29ubHlfZm9yX2xvY2FsX3VzZV8xMjM0NQ=="
     return Fernet(key.encode() if isinstance(key, str) else key)
 
 
-def init_db() -> None:
+def _get_db_url() -> Optional[str]:
+    """Retorna a URL do banco PostgreSQL se configurada em ambiente ou secrets."""
+    url = os.environ.get("DATABASE_URL")
+    if not url and hasattr(st, "secrets") and st.secrets:
+        url = st.secrets.get("database_url")
+        if not url and "database" in st.secrets and isinstance(st.secrets["database"], dict):
+            url = st.secrets["database"].get("url")
+    return url
+
+
+@contextmanager
+def get_db():
+    """Context manager que fornece uma conexão e cursor adaptados para SQLite ou PostgreSQL."""
+    db_url = _get_db_url()
+
+    if db_url and (db_url.startswith("postgresql://") or db_url.startswith("postgres://")):
+        try:
+            import psycopg2
+            import psycopg2.extras
+            conn = psycopg2.connect(db_url)
+            cursor = conn.cursor()
+            yield ("postgres", conn, cursor)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return
+        except Exception as err:
+            logger.warning(f"Falha ao conectar ao PostgreSQL ({err}). Recuando para SQLite...")
+
+    # Fallback para SQLite local
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_credentials (
-                email TEXT PRIMARY KEY,
-                encrypted_json BLOB NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                email TEXT PRIMARY KEY,
-                password_hash BLOB NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS metric_results (
-                user_email TEXT NOT NULL,
-                fingerprint TEXT NOT NULL,
-                label TEXT NOT NULL,
-                data_source TEXT NOT NULL,
-                point_lon REAL,
-                point_lat REAL,
-                buffer_dist REAL,
-                class_metrics_json TEXT NOT NULL,
-                landscape_metrics_json TEXT NOT NULL,
-                metric_names_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY (user_email, fingerprint)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_metric_results_user
-            ON metric_results(user_email, created_at)
-            """
-        )
-        # Colunas adicionadas depois da criação original da tabela (matriz
-        # socioecológica/SSE — ver `_build_sse_matrix` em app.py): SQLite não
-        # tem migração automática, então cada ALTER TABLE é tentado e
-        # ignorado se a coluna já existir (bancos `data/app.db` antigos não
-        # quebram; bancos novos já nascem com elas via a criação acima só
-        # cobrir o schema original — por isso ainda precisam do ALTER).
-        for column_def in (
-            "municipio_codigo TEXT",
-            "municipio_nome TEXT",
-            "municipio_uf TEXT",
-            "ano INTEGER",
-        ):
-            try:
-                conn.execute(f"ALTER TABLE metric_results ADD COLUMN {column_def}")
-            except sqlite3.OperationalError:
-                pass  # coluna já existe
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        yield ("sqlite", conn, cursor)
         conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _adapt_query(query: str, db_type: str) -> str:
+    """Adapta marcadores de posição de parâmetro: '?' para SQLite, '%s' para PostgreSQL."""
+    if db_type == "postgres":
+        return query.replace("?", "%s")
+    return query
+
+
+def init_db() -> None:
+    """Inicializa as tabelas do banco de dados (users, user_credentials, metric_results)."""
+    with get_db() as (db_type, conn, cursor):
+        blob_type = "BYTEA" if db_type == "postgres" else "BLOB"
+        real_type = "DOUBLE PRECISION" if db_type == "postgres" else "REAL"
+
+        # 1. Tabela de Credenciais GEE do Usuário
+        cursor.execute(
+            _adapt_query(
+                f"""
+                CREATE TABLE IF NOT EXISTS user_credentials (
+                    email VARCHAR(255) PRIMARY KEY,
+                    encrypted_json {blob_type} NOT NULL,
+                    updated_at VARCHAR(255) NOT NULL
+                )
+                """,
+                db_type,
+            )
+        )
+
+        # 2. Tabela de Usuários (Login / Autenticação)
+        cursor.execute(
+            _adapt_query(
+                f"""
+                CREATE TABLE IF NOT EXISTS users (
+                    email VARCHAR(255) PRIMARY KEY,
+                    password_hash {blob_type} NOT NULL,
+                    created_at VARCHAR(255) NOT NULL
+                )
+                """,
+                db_type,
+            )
+        )
+
+        # 3. Tabela de Resultados de Métricas da Paisagem (Escritório Virtual por usuário)
+        cursor.execute(
+            _adapt_query(
+                f"""
+                CREATE TABLE IF NOT EXISTS metric_results (
+                    user_email VARCHAR(255) NOT NULL,
+                    fingerprint VARCHAR(255) NOT NULL,
+                    label VARCHAR(255) NOT NULL,
+                    data_source VARCHAR(255) NOT NULL,
+                    point_lon {real_type},
+                    point_lat {real_type},
+                    buffer_dist {real_type},
+                    class_metrics_json TEXT NOT NULL,
+                    landscape_metrics_json TEXT NOT NULL,
+                    metric_names_json TEXT NOT NULL,
+                    created_at VARCHAR(255) NOT NULL,
+                    municipio_codigo VARCHAR(50),
+                    municipio_nome VARCHAR(255),
+                    municipio_uf VARCHAR(10),
+                    ano INTEGER,
+                    PRIMARY KEY (user_email, fingerprint)
+                )
+                """,
+                db_type,
+            )
+        )
+
+        # Índice para consultas rápidas no Escritório Virtual do usuário
+        if db_type == "sqlite":
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_metric_results_user ON metric_results(user_email, created_at)"
+            )
+        else:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_metric_results_user ON metric_results(user_email, created_at DESC)"
+            )
+
+        # Garantir colunas adicionais para bancos existentes
+        for col_name, col_type in [
+            ("municipio_codigo", "VARCHAR(50)"),
+            ("municipio_nome", "VARCHAR(255)"),
+            ("municipio_uf", "VARCHAR(10)"),
+            ("ano", "INTEGER"),
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE metric_results ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass
+
+        # 4. Tabela de Configurações e Preferências por Usuário
+        cursor.execute(
+            _adapt_query(
+                """
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_email VARCHAR(255) PRIMARY KEY,
+                    settings_json TEXT NOT NULL,
+                    updated_at VARCHAR(255) NOT NULL
+                )
+                """,
+                db_type,
+            )
+        )
+
 
 
 def save_metric_result(
@@ -155,31 +192,19 @@ def save_metric_result(
     fingerprint: str,
     label: str,
     data_source: str,
-    point_lonlat: tuple | None,
-    buffer_dist: float | None,
-    class_metrics_df,
+    point_lonlat: Optional[Tuple[float, float]],
+    buffer_dist: Optional[float],
+    class_metrics_df: pd.DataFrame,
     landscape_metrics: dict,
-    municipio_codigo: str | None = None,
-    municipio_nome: str | None = None,
-    municipio_uf: str | None = None,
-    ano: int | None = None,
+    municipio_codigo: Optional[str] = None,
+    municipio_nome: Optional[str] = None,
+    municipio_uf: Optional[str] = None,
+    ano: Optional[int] = None,
 ) -> None:
-    """Salva (ou substitui, se a mesma fingerprint já existir para este
-    usuário) o resultado de uma análise já processada. `class_metrics_df` é
-    serializado com `to_json(orient="split")` (preserva índice/colunas/tipos
-    sem perdas); `metric_names_json` guarda a lista exata de colunas
-    presentes, para que `get_metric_result` decida hit/miss sem precisar
-    desserializar o DataFrame inteiro.
-
-    `municipio_codigo`/`municipio_nome`/`municipio_uf`/`ano` só são
-    preenchidos quando a análise usou área de interesse municipal (ver modo
-    "Limite municipal (IBGE)" em app.py) e/ou um ano foi identificável (nome
-    do arquivo, no modo multi-GeoTIFF) — ficam `None` no caminho ponto+buffer
-    de uma única extração. Usados por `_build_sse_matrix` (app.py) para
-    identificar/agregar cada linha da matriz socioecológica."""
+    """Salva (ou atualiza) o resultado de uma análise de paisagem para o Escritório Virtual do usuário."""
     lon, lat = point_lonlat if point_lonlat else (None, None)
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.execute(
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query(
             """
             INSERT INTO metric_results (
                 user_email, fingerprint, label, data_source,
@@ -189,153 +214,212 @@ def save_metric_result(
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_email, fingerprint) DO UPDATE SET
-                label = excluded.label,
-                data_source = excluded.data_source,
-                point_lon = excluded.point_lon,
-                point_lat = excluded.point_lat,
-                buffer_dist = excluded.buffer_dist,
-                class_metrics_json = excluded.class_metrics_json,
-                landscape_metrics_json = excluded.landscape_metrics_json,
-                metric_names_json = excluded.metric_names_json,
-                created_at = excluded.created_at,
-                municipio_codigo = excluded.municipio_codigo,
-                municipio_nome = excluded.municipio_nome,
-                municipio_uf = excluded.municipio_uf,
-                ano = excluded.ano
+                label = EXCLUDED.label,
+                data_source = EXCLUDED.data_source,
+                point_lon = EXCLUDED.point_lon,
+                point_lat = EXCLUDED.point_lat,
+                buffer_dist = EXCLUDED.buffer_dist,
+                class_metrics_json = EXCLUDED.class_metrics_json,
+                landscape_metrics_json = EXCLUDED.landscape_metrics_json,
+                metric_names_json = EXCLUDED.metric_names_json,
+                created_at = EXCLUDED.created_at,
+                municipio_codigo = EXCLUDED.municipio_codigo,
+                municipio_nome = EXCLUDED.municipio_nome,
+                municipio_uf = EXCLUDED.municipio_uf,
+                ano = EXCLUDED.ano
             """,
-            (
-                user_email, fingerprint, label, data_source,
-                lon, lat, buffer_dist,
-                class_metrics_df.to_json(orient="split"),
-                json.dumps(landscape_metrics),
-                json.dumps(list(class_metrics_df.columns)),
-                datetime.now(timezone.utc).isoformat(),
-                municipio_codigo, municipio_nome, municipio_uf, ano,
-            ),
+            db_type,
         )
-        conn.commit()
+        params = (
+            user_email,
+            fingerprint,
+            label,
+            data_source,
+            lon,
+            lat,
+            buffer_dist,
+            class_metrics_df.to_json(orient="split"),
+            json.dumps(landscape_metrics),
+            json.dumps(list(class_metrics_df.columns)),
+            datetime.now(timezone.utc).isoformat(),
+            municipio_codigo,
+            municipio_nome,
+            municipio_uf,
+            ano,
+        )
+        cursor.execute(sql, params)
 
 
-def get_metric_result(user_email: str, fingerprint: str, required_metric_names: list) -> dict | None:
-    """Retorna o resultado em cache para (user_email, fingerprint), ou None se
-    não houver resultado salvo OU se o resultado salvo não contiver todas as
-    métricas em `required_metric_names` (ex.: uma métrica nova foi adicionada
-    a METRICS_INFO desde que este resultado foi salvo) — nesse caso o
-    chamador deve tratar como cache miss e reprocessar o arquivo inteiro (ver
-    docstring do módulo)."""
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        row = conn.execute(
+def get_metric_result(
+    user_email: str, fingerprint: str, required_metric_names: list
+) -> Optional[dict]:
+    """Retorna o resultado em cache para (user_email, fingerprint) no Escritório Virtual."""
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query(
             """
             SELECT class_metrics_json, landscape_metrics_json, metric_names_json
             FROM metric_results WHERE user_email = ? AND fingerprint = ?
             """,
-            (user_email, fingerprint),
-        ).fetchone()
+            db_type,
+        )
+        cursor.execute(sql, (user_email, fingerprint))
+        row = cursor.fetchone()
+
     if row is None:
         return None
+
     class_metrics_json, landscape_metrics_json, metric_names_json = row
     cached_metric_names = set(json.loads(metric_names_json))
     if not set(required_metric_names) <= cached_metric_names:
         return None
+
     return {
         "class_metrics_df_sub": pd.read_json(io.StringIO(class_metrics_json), orient="split"),
         "landscape_metrics": json.loads(landscape_metrics_json),
     }
 
 
-def list_metric_results(user_email: str, full: bool = False) -> list:
-    """Lista os resultados salvos do usuário, mais recente primeiro — usado
-    pelo painel 'Suas análises anteriores'. Por padrão omite os campos JSON
-    (podem ser grandes) para manter a listagem barata; passe `full=True` para
-    incluí-los (equivalente a chamar `get_metric_result` para cada linha)."""
+def list_metric_results(user_email: str, full: bool = False) -> List[dict]:
+    """Lista as análises do Escritório Virtual do usuário, mais recente primeiro."""
     columns = (
         "fingerprint, label, data_source, point_lon, point_lat, buffer_dist, created_at, "
         "municipio_codigo, municipio_nome, municipio_uf, ano"
     )
     if full:
         columns += ", class_metrics_json, landscape_metrics_json, metric_names_json"
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT {columns} FROM metric_results
-            WHERE user_email = ? ORDER BY created_at DESC
-            """,
-            (user_email,),
-        ).fetchall()
+
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query(
+            f"SELECT {columns} FROM metric_results WHERE user_email = ? ORDER BY created_at DESC",
+            db_type,
+        )
+        cursor.execute(sql, (user_email,))
+        rows = cursor.fetchall()
+
     col_names = [c.strip() for c in columns.split(",")]
     return [dict(zip(col_names, row)) for row in rows]
 
 
 def delete_metric_result(user_email: str, fingerprint: str) -> None:
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.execute(
-            "DELETE FROM metric_results WHERE user_email = ? AND fingerprint = ?",
-            (user_email, fingerprint),
+    """Remove uma análise salva no Escritório Virtual do usuário."""
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query(
+            "DELETE FROM metric_results WHERE user_email = ? AND fingerprint = ?", db_type
         )
-        conn.commit()
+        cursor.execute(sql, (user_email, fingerprint))
 
 
 def create_user(email: str, password: str) -> bool:
-    """Cria um usuário novo. Retorna False se o e-mail já estiver cadastrado."""
+    """Cria um novo usuário na plataforma. Retorna False se o e-mail já existir."""
     password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-    with closing(sqlite3.connect(DB_PATH)) as conn:
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query(
+            "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)", db_type
+        )
         try:
-            conn.execute(
-                "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
-                (email, password_hash, datetime.now(timezone.utc).isoformat()),
+            # Em PostgreSQL/psycopg2, bytes usam a representação binária direta
+            cursor.execute(
+                sql, (email, bytes(password_hash), datetime.now(timezone.utc).isoformat())
             )
-            conn.commit()
-        except sqlite3.IntegrityError:
+            return True
+        except Exception as err:
+            logger.warning(f"Erro ao criar usuário ({email}): {err}")
             return False
-    return True
 
 
 def verify_user(email: str, password: str) -> bool:
-    """Confere e-mail/senha contra o hash salvo."""
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        row = conn.execute(
-            "SELECT password_hash FROM users WHERE email = ?", (email,)
-        ).fetchone()
-    if row is None:
+    """Valida o e-mail e senha informados contra o hash salvo no banco de dados."""
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query("SELECT password_hash FROM users WHERE email = ?", db_type)
+        cursor.execute(sql, (email,))
+        row = cursor.fetchone()
+
+    if row is None or not row[0]:
         return False
-    return bcrypt.checkpw(password.encode("utf-8"), row[0])
+
+    hash_val = row[0]
+    if isinstance(hash_val, memoryview):
+        hash_val = hash_val.tobytes()
+
+    return bcrypt.checkpw(password.encode("utf-8"), hash_val)
 
 
-def get_credentials(email: str) -> dict | None:
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        row = conn.execute(
-            "SELECT encrypted_json FROM user_credentials WHERE email = ?", (email,)
-        ).fetchone()
-    if row is None:
+def get_credentials(email: str) -> Optional[dict]:
+    """Recupera e decifra as credenciais do GEE do usuário."""
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query("SELECT encrypted_json FROM user_credentials WHERE email = ?", db_type)
+        cursor.execute(sql, (email,))
+        row = cursor.fetchone()
+
+    if row is None or not row[0]:
         return None
+
+    enc_val = row[0]
+    if isinstance(enc_val, memoryview):
+        enc_val = enc_val.tobytes()
+
     fernet = _get_fernet()
     try:
-        decrypted = fernet.decrypt(row[0])
+        decrypted = fernet.decrypt(enc_val)
     except InvalidToken:
-        # InvalidToken aqui significa "chave errada/rotacionada" ou "dado
-        # corrompido", nunca "usuário não cadastrado" (esse caso já retornou
-        # acima). Tratamos como None de propósito para reaproveitar o mesmo
-        # formulário de cadastro em app.py, mas isso mascara o problema real
-        # do operador do app — ver "Pontos de atenção" no topo do módulo.
+        logger.error(f"Falha ao decifrar credenciais para {email} (chave alterada ou dado corrompido)")
         return None
+
     return json.loads(decrypted.decode("utf-8"))
 
 
 def save_credentials(email: str, credentials: dict) -> None:
+    """Salva (ou atualiza) as credenciais criptografadas do GEE para o usuário."""
     fernet = _get_fernet()
     encrypted = fernet.encrypt(json.dumps(credentials).encode("utf-8"))
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        # Upsert por e-mail: cadastrar uma nova credencial sempre substitui a
-        # anterior (sem histórico). Reflete a regra de negócio de "uma
-        # credencial GEE ativa por usuário" — ver módulo.
-        conn.execute(
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query(
             """
             INSERT INTO user_credentials (email, encrypted_json, updated_at)
             VALUES (?, ?, ?)
             ON CONFLICT(email) DO UPDATE SET
-                encrypted_json = excluded.encrypted_json,
-                updated_at = excluded.updated_at
+                encrypted_json = EXCLUDED.encrypted_json,
+                updated_at = EXCLUDED.updated_at
             """,
-            (email, encrypted, datetime.now(timezone.utc).isoformat()),
+            db_type,
         )
-        conn.commit()
+        cursor.execute(
+            sql, (email, bytes(encrypted), datetime.now(timezone.utc).isoformat())
+        )
+
+
+def get_user_settings(email: str) -> dict:
+    """Recupera as configurações e preferências personalizadas do usuário."""
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query("SELECT settings_json FROM user_settings WHERE user_email = ?", db_type)
+        cursor.execute(sql, (email,))
+        row = cursor.fetchone()
+
+    if row is None or not row[0]:
+        return {
+            "default_buffer_dist": 5000,
+            "default_data_source": "mapbiomas",
+            "default_uf": "GO",
+            "selected_metrics": ["proportion_of_landscape", "number_of_patches", "edge_density", "shannon_diversity_index"],
+        }
+
+    return json.loads(row[0])
+
+
+def save_user_settings(email: str, settings_dict: dict) -> None:
+    """Salva (ou atualiza) as configurações individualizadas do usuário."""
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query(
+            """
+            INSERT INTO user_settings (user_email, settings_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_email) DO UPDATE SET
+                settings_json = EXCLUDED.settings_json,
+                updated_at = EXCLUDED.updated_at
+            """,
+            db_type,
+        )
+        cursor.execute(
+            sql, (email, json.dumps(settings_dict), datetime.now(timezone.utc).isoformat())
+        )
+

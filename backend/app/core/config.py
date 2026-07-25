@@ -25,12 +25,12 @@ class Settings(BaseSettings):
 
     db_path: str = "data/app.db"
 
-    jwt_secret_key: str
+    jwt_secret_key: str = "dev-jwt-secret-change-me"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
 
-    app_encryption_key: str
+    app_encryption_key: str = "dGVzdF9rZXlfZGV2X29ubHlfZm9yX2xvY2FsX3VzZV8xMjM0NQ=="
 
     cors_origins: list[str] = ["http://localhost:5173"]
 
