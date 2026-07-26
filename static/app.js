@@ -55,9 +55,14 @@ document.addEventListener('DOMContentLoaded', () => {
   loadUfs();
   setupAccessibility();
   checkAuthSession();
+  toggleTifUpload();
 });
 
 let authMode = 'login'; // 'login' ou 'register'
+
+function authHeaders() {
+  return { 'Authorization': `Bearer ${localStorage.getItem('access_token')}` };
+}
 
 function checkAuthSession() {
   const token = localStorage.getItem('access_token');
@@ -70,6 +75,7 @@ function checkAuthSession() {
       <button onclick="logout()" class="btn-outline" style="margin-left: 0.5rem; padding: 0.3rem 0.6rem; font-size: 0.8rem;">Sair</button>
     `;
     closeAuthModal();
+    loadGeeCredentialsStatus();
   } else {
     container.innerHTML = `<button id="btn-open-login" class="btn-primary" onclick="openAuthModal()">Entrar / Cadastrar</button>`;
     openAuthModal();
@@ -190,34 +196,48 @@ function updateMapMarker() {
 }
 
 // Alternar entre Abas da Aplicação
-function switchTab(tabId) {
+function switchTab(evt, tabId) {
   currentTab = tabId;
   document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
   document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
 
   document.getElementById(tabId).style.display = 'block';
-  event.currentTarget.classList.add('active');
+  if (evt && evt.currentTarget) evt.currentTarget.classList.add('active');
 
   if (tabId === 'tab-sse') {
     loadSseMatrix();
   }
 }
 
-// Acessibilidade (Alto Contraste e Fonte)
+// Acessibilidade (Alto Contraste e Fonte) — preferências persistidas em
+// localStorage para sobreviver a reloads e à navegação entre landing/app.
 function setupAccessibility() {
-  document.getElementById('toggle-contrast').addEventListener('click', () => {
+  const contrastBtn = document.getElementById('toggle-contrast');
+  const fontUpBtn = document.getElementById('font-size-up');
+  const fontDownBtn = document.getElementById('font-size-down');
+
+  if (localStorage.getItem('high_contrast') === '1') {
+    document.body.classList.add('high-contrast');
+  }
+
+  let currentFontSize = parseInt(localStorage.getItem('font_size') || '100', 10);
+  document.body.style.fontSize = currentFontSize + '%';
+
+  contrastBtn.addEventListener('click', () => {
     document.body.classList.toggle('high-contrast');
+    localStorage.setItem('high_contrast', document.body.classList.contains('high-contrast') ? '1' : '0');
   });
 
-  let currentFontSize = 100;
-  document.getElementById('font-size-up').addEventListener('click', () => {
+  fontUpBtn.addEventListener('click', () => {
     currentFontSize = Math.min(130, currentFontSize + 10);
     document.body.style.fontSize = currentFontSize + '%';
+    localStorage.setItem('font_size', String(currentFontSize));
   });
 
-  document.getElementById('font-size-down').addEventListener('click', () => {
+  fontDownBtn.addEventListener('click', () => {
     currentFontSize = Math.max(80, currentFontSize - 10);
     document.body.style.fontSize = currentFontSize + '%';
+    localStorage.setItem('font_size', String(currentFontSize));
   });
 }
 
@@ -232,90 +252,209 @@ function toggleRoiInputs() {
 function toggleTifUpload() {
   const source = document.getElementById('data-source').value;
   document.getElementById('geotiff-upload-group').style.display = source === 'geotiff' ? 'block' : 'none';
+  document.getElementById('gee-credentials-group').style.display = source === 'mapbiomas' ? 'block' : 'none';
 }
 
 // API IBGE (Estados e Municípios)
 async function loadUfs() {
+  const select = document.getElementById('select-uf');
   try {
     const res = await fetch('https://servicodados.ibge.gov.br/api/v1/localidades/estados?ordenacao=nome');
+    if (!res.ok) throw new Error('Resposta inválida da API do IBGE.');
     const ufs = await res.json();
-    const select = document.getElementById('select-uf');
     select.innerHTML = '<option value="">Selecione uma UF...</option>';
     ufs.forEach(uf => {
       select.innerHTML += `<option value="${uf.sigla}">${uf.sigla} - ${uf.nome}</option>`;
     });
   } catch (err) {
     console.error('Erro ao buscar UFs:', err);
+    select.innerHTML = '<option value="">Erro ao carregar estados</option>';
+    showToast('Não foi possível carregar a lista de estados do IBGE. Recarregue a página.', 'error');
   }
 }
 
 async function loadMunicipios() {
   const uf = document.getElementById('select-uf').value;
+  const select = document.getElementById('select-municipio');
   if (!uf) return;
+  select.innerHTML = '<option>Carregando municípios...</option>';
   try {
     const res = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios`);
+    if (!res.ok) throw new Error('Resposta inválida da API do IBGE.');
     const munis = await res.json();
-    const select = document.getElementById('select-municipio');
     select.innerHTML = '';
     munis.forEach(m => {
       select.innerHTML += `<option value="${m.id}">${m.nome}</option>`;
     });
   } catch (err) {
     console.error('Erro ao buscar municípios:', err);
+    select.innerHTML = '<option value="">Erro ao carregar municípios</option>';
+    showToast('Não foi possível carregar os municípios desse estado.', 'error');
   }
 }
 
-// Execução da Análise de Paisagem
-function runLandscapeAnalysis() {
+// Credenciais do Earth Engine (obrigatórias para a fonte MapBiomas)
+async function loadGeeCredentialsStatus() {
+  const statusEl = document.getElementById('gee-credentials-status');
+  if (!localStorage.getItem('access_token')) {
+    statusEl.textContent = 'Faça login para cadastrar sua credencial do Earth Engine.';
+    return;
+  }
+  try {
+    const res = await fetch('/api/credentials/', { headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Falha ao verificar credenciais.');
+    statusEl.textContent = data.has_credentials
+      ? `✅ Credencial cadastrada (${data.client_email})`
+      : '⚠️ Nenhuma credencial do Earth Engine cadastrada — obrigatória para usar a fonte MapBiomas.';
+  } catch (err) {
+    statusEl.textContent = 'Não foi possível verificar o status da credencial.';
+  }
+}
+
+async function saveGeeCredentials() {
   if (!requireAuth()) return;
+  const jsonText = document.getElementById('gee-credentials-json').value.trim();
+  if (!jsonText) {
+    showToast('Cole o JSON da credencial antes de salvar.', 'error');
+    return;
+  }
+  try {
+    const res = await fetch('/api/credentials/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ service_account_json: jsonText })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Credencial inválida.');
+    showToast(data.message, 'success');
+    document.getElementById('gee-credentials-json').value = '';
+    document.getElementById('gee-credentials-details').removeAttribute('open');
+    loadGeeCredentialsStatus();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// Validação prévia dos campos obrigatórios, conforme modo de área/fonte
+function validateAnalysisInputs(roiType, dataSource, tifFile) {
+  if (roiType === 'municipio' && !document.getElementById('select-municipio').value) {
+    return 'Selecione um estado e um município antes de calcular.';
+  }
+  if (dataSource === 'mapbiomas') {
+    if (roiType === 'point' && !selectedPoint) {
+      return 'Clique no mapa para selecionar um ponto de interesse antes de calcular.';
+    }
+  } else if (dataSource === 'geotiff') {
+    if (!tifFile) {
+      return 'Envie um arquivo GeoTIFF antes de calcular.';
+    }
+  }
+  return null;
+}
+
+// Execução da Análise de Paisagem (dados reais via /api/metrics/calculate)
+async function runLandscapeAnalysis() {
+  if (!requireAuth()) return;
+
+  const roiType = document.getElementById('roi-type').value;
+  const dataSource = document.getElementById('data-source').value;
+  const tifInput = document.getElementById('tif-file');
+  const tifFile = tifInput.files && tifInput.files[0] ? tifInput.files[0] : null;
+
+  const validationError = validateAnalysisInputs(roiType, dataSource, tifFile);
+  if (validationError) {
+    showToast(validationError, 'error');
+    return;
+  }
 
   const button = document.getElementById('btn-compute');
   button.disabled = true;
   button.textContent = '⏳ Processando...';
 
-  document.getElementById('results-placeholder').style.display = 'none';
-  document.getElementById('results-content').style.display = 'block';
+  const formData = new FormData();
+  formData.append('data_source', dataSource);
 
-  // Dados simulados de demonstração das métricas calculadas
-  const classData = {
-    labels: ['Floresta', 'Pastagem', 'Agricultura', 'Corpo d\'Água'],
-    proportions: [55.4, 28.2, 12.1, 4.3],
-    np: [14, 22, 8, 3],
-    ed: [45.2, 38.1, 18.4, 6.2]
-  };
+  if (roiType === 'municipio') {
+    const ufSelect = document.getElementById('select-uf');
+    const muniSelect = document.getElementById('select-municipio');
+    formData.append('municipio_codigo', muniSelect.value);
+    formData.append('municipio_nome', muniSelect.selectedOptions[0] ? muniSelect.selectedOptions[0].textContent : '');
+    formData.append('municipio_uf', ufSelect.value);
+  } else if (selectedPoint) {
+    formData.append('point_lon', selectedPoint.lng);
+    formData.append('point_lat', selectedPoint.lat);
+    formData.append('buffer_dist', document.getElementById('buffer-dist').value);
+  }
+
+  if (dataSource === 'geotiff' && tifFile) {
+    formData.append('tif_file', tifFile);
+  }
+
+  try {
+    const res = await fetch('/api/metrics/calculate', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Falha ao calcular métricas.');
+    }
+
+    document.getElementById('results-placeholder').style.display = 'none';
+    document.getElementById('results-content').style.display = 'block';
+    renderMetricsResult(data);
+    showToast('Análise concluída com sucesso.', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = '🧮 Calcular Métricas da Paisagem';
+  }
+}
+
+function renderMetricsResult(data) {
+  const lm = data.landscape_metrics || {};
+  const fmt = (v) => (typeof v === 'number' ? v.toFixed(2) : '—');
 
   document.getElementById('landscape-metrics-summary').innerHTML = `
     <div style="background: rgba(16,185,129,0.1); border: 1px solid var(--accent-emerald); padding: 1rem; border-radius: 8px;">
-      <b>SHDI (Diversidade de Shannon):</b> 0.94 • <b>NP Total:</b> 47 manchas • <b>Área Analisada:</b> 78.5 km²
+      <b>${data.label}</b>${data.ano ? ` (${data.ano})` : ''}<br>
+      <b>SHDI (Diversidade de Shannon):</b> ${fmt(lm.shannon_diversity_index)} •
+      <b>Densidade de manchas (PD):</b> ${fmt(lm.patch_density)} •
+      <b>Densidade de borda (ED):</b> ${fmt(lm.edge_density)} m/ha
     </div>
   `;
 
-  // Renderiza Tabela
+  const classMetrics = data.class_metrics || {};
+  const classNames = Object.keys(classMetrics);
+
   const tbody = document.querySelector('#metrics-table tbody');
   tbody.innerHTML = '';
-  classData.labels.forEach((cls, i) => {
+  classNames.forEach((cls) => {
+    const row = classMetrics[cls];
     tbody.innerHTML += `
       <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
         <td style="padding: 0.5rem 0;">${cls}</td>
-        <td>${classData.proportions[i]}%</td>
-        <td>${classData.np[i]}</td>
-        <td>${classData.ed[i]} m/ha</td>
+        <td>${row.proportion_of_landscape != null ? row.proportion_of_landscape.toFixed(1) : '—'}%</td>
+        <td>${row.number_of_patches != null ? row.number_of_patches : '—'}</td>
+        <td>${row.edge_density != null ? row.edge_density.toFixed(1) : '—'} m/ha</td>
       </tr>
     `;
   });
 
-  // Renderiza Gráfico Chart.js
   const ctx = document.getElementById('metrics-chart').getContext('2d');
   if (metricsChartInstance) metricsChartInstance.destroy();
 
   metricsChartInstance = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: classData.labels,
+      labels: classNames,
       datasets: [{
         label: 'Proporção da Paisagem (%)',
-        data: classData.proportions,
-        backgroundColor: ['#10b981', '#f59e0b', '#3b82f6', '#06b6d4'],
+        data: classNames.map((c) => classMetrics[c].proportion_of_landscape ?? 0),
+        backgroundColor: '#10b981',
         borderRadius: 6
       }]
     },
@@ -325,37 +464,28 @@ function runLandscapeAnalysis() {
       scales: { y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.1)' } } }
     }
   });
-
-  button.disabled = false;
-  button.textContent = '🧮 Calcular Métricas da Paisagem';
-  showToast('Análise pronta para visualização.', 'success');
 }
 
-// Matriz Socioecológica e Clustering API
+// Matriz Socioecológica e Clustering API (dados reais)
 async function loadSseMatrix() {
   if (!requireAuth()) return;
+  const head = document.getElementById('sse-table-head');
+  const body = document.getElementById('sse-table-body');
   try {
-    const res = await fetch('/api/sse/matrix', {
-      headers: { 'Authorization': `Bearer ${localStorage.getItem('access_token')}` }
-    });
+    const res = await fetch('/api/sse/matrix', { headers: authHeaders() });
     const data = await res.json();
-
-    const head = document.getElementById('sse-table-head');
-    const body = document.getElementById('sse-table-body');
+    if (!res.ok) throw new Error(data.detail || 'Falha ao carregar a Matriz SSE.');
 
     if (!data.records || data.records.length === 0) {
-      // Exemplo demonstrativo de análises salvas
-      const dummyData = [
-        { label: 'Goiânia/GO (2020)', pct_Floresta: 60.0, pct_Pastagem: 40.0, SHDI: 0.91, populacao_estimada_ibge: 1530000 },
-        { label: 'Anápolis/GO (2020)', pct_Floresta: 25.0, pct_Pastagem: 75.0, SHDI: 0.54, populacao_estimada_ibge: 395000 },
-        { label: 'Rio Verde/GO (2020)', pct_Floresta: 15.0, pct_Pastagem: 85.0, SHDI: 0.38, populacao_estimada_ibge: 243000 }
-      ];
-      renderSseTable(dummyData);
-    } else {
-      renderSseTable(data.records);
+      head.innerHTML = '<th>Nenhuma análise salva ainda — calcule uma análise na aba "Análise de Paisagem" para começar.</th>';
+      body.innerHTML = '';
+      return;
     }
+    renderSseTable(data.records);
   } catch (err) {
-    console.error('Erro ao carregar Matriz SSE:', err);
+    head.innerHTML = '<th>Não foi possível carregar a Matriz SSE</th>';
+    body.innerHTML = '';
+    showToast(err.message, 'error');
   }
 }
 
@@ -368,7 +498,7 @@ function renderSseTable(records) {
   head.innerHTML = cols.map(c => `<th>${c}</th>`).join('');
   body.innerHTML = records.map(r => `
     <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-      ${cols.map(c => `<td style="padding: 0.5rem;">${r[c] !== null ? r[c] : '-'}</td>`).join('')}
+      ${cols.map(c => `<td style="padding: 0.5rem;">${r[c] !== null && r[c] !== undefined ? r[c] : '-'}</td>`).join('')}
     </tr>
   `).join('');
 }
@@ -380,39 +510,71 @@ function toggleClusterControls() {
   document.getElementById('dbscan-controls').style.display = algo === 'dbscan' ? 'block' : 'none';
 }
 
-function runClustering() {
+async function runClustering() {
   if (!requireAuth()) return;
   const algo = document.getElementById('cluster-algo').value;
 
+  try {
+    const matrixRes = await fetch('/api/sse/matrix', { headers: authHeaders() });
+    const matrixData = await matrixRes.json();
+    if (!matrixRes.ok) throw new Error(matrixData.detail || 'Falha ao carregar a Matriz SSE.');
 
-  // Dados simulados de projeção PCA 2D
-  const pcaData = [
-    { pca_1: -1.8, pca_2: 0.5, cluster: 'Cluster 1', label: 'Goiânia/GO' },
-    { pca_1: 1.2, pca_2: -0.9, cluster: 'Cluster 2', label: 'Anápolis/GO' },
-    { pca_1: 1.5, pca_2: 1.1, cluster: algo === 'dbscan' ? 'Outlier (Ruído)' : 'Cluster 2', label: 'Rio Verde/GO' }
-  ];
+    const excluded = ['point_lon', 'point_lat', 'buffer_dist', 'ano'];
+    const featureCols = (matrixData.numeric_columns || []).filter(c => !excluded.includes(c));
+
+    if (!matrixData.records || matrixData.records.length < 2 || featureCols.length === 0) {
+      showToast('Salve ao menos 2 análises (com métricas numéricas) antes de executar um agrupamento.', 'error');
+      return;
+    }
+
+    const endpoint = algo === 'kmeans' ? '/api/sse/cluster/kmeans' : '/api/sse/cluster/dbscan';
+    const payload = algo === 'kmeans'
+      ? { feature_cols: featureCols, k: parseInt(document.getElementById('input-k').value, 10) }
+      : {
+          feature_cols: featureCols,
+          eps: parseFloat(document.getElementById('input-eps').value),
+          min_samples: parseInt(document.getElementById('input-min-samples').value, 10)
+        };
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Falha ao executar o agrupamento.');
+
+    renderClusterResult(algo, data);
+    showToast(algo === 'kmeans' ? 'Agrupamento concluído com sucesso.' : 'Análise de densidade concluída.', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+function renderClusterResult(algo, data) {
+  const clusterKey = algo === 'kmeans' ? 'cluster_kmeans' : 'cluster_dbscan';
+  const pcaPoints = data.pca_data || [];
+
+  const byCluster = {};
+  pcaPoints.forEach((p) => {
+    const key = String(p[clusterKey]);
+    if (!byCluster[key]) byCluster[key] = [];
+    byCluster[key].push({ x: p.pca_1, y: p.pca_2 });
+  });
+
+  const palette = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#eab308'];
+  let colorIdx = 0;
+  const datasets = Object.keys(byCluster).map((key) => {
+    const color = key.startsWith('Outlier') ? '#ef4444' : palette[(colorIdx++) % palette.length];
+    return { label: key, data: byCluster[key], backgroundColor: color, pointRadius: 8 };
+  });
 
   const ctx = document.getElementById('pca-chart').getContext('2d');
   if (pcaChartInstance) pcaChartInstance.destroy();
 
   pcaChartInstance = new Chart(ctx, {
     type: 'scatter',
-    data: {
-      datasets: [
-        {
-          label: 'Cluster 1',
-          data: [{ x: -1.8, y: 0.5 }],
-          backgroundColor: '#10b981',
-          pointRadius: 8
-        },
-        {
-          label: algo === 'dbscan' ? 'Outlier (Ruído)' : 'Cluster 2',
-          data: [{ x: 1.2, y: -0.9 }, { x: 1.5, y: 1.1 }],
-          backgroundColor: algo === 'dbscan' ? '#ef4444' : '#3b82f6',
-          pointRadius: 8
-        }
-      ]
-    },
+    data: { datasets },
     options: {
       responsive: true,
       scales: {
@@ -422,10 +584,10 @@ function runClustering() {
     }
   });
 
-  document.getElementById('cluster-summary-info').innerText = 
-    algo === 'kmeans' ? '✅ K-Means concluído: 2 clusters formados • Silhouette Score: 0.742'
-                      : '✅ DBSCAN concluído: 1 cluster denso • 1 outlier de alta fragmentação identificado';
-  showToast(algo === 'kmeans' ? 'Agrupamento concluído com sucesso.' : 'Análise de densidade concluída.', 'success');
+  document.getElementById('cluster-summary-info').innerText =
+    algo === 'kmeans'
+      ? `✅ K-Means concluído: ${data.k} cluster(s) formado(s) • Silhouette Score: ${data.silhouette != null ? data.silhouette.toFixed(3) : '—'}`
+      : `✅ DBSCAN concluído: ${data.n_clusters} cluster(s) denso(s) • ${data.n_noise} outlier(s) identificado(s)`;
 }
 
 // Gestão de Avatares 3D e Onboarding
@@ -478,19 +640,40 @@ function nextTourStep() {
   }
 }
 
-// Exportação e Exclusão LGPD
-function exportUserData() {
-  showToast('Seu arquivo de exportação foi preparado.', 'success');
-  const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ user: "usuario@exemplo.com", status: "LGPD Export OK", date: new Date().toISOString() }));
-  const dlAnchorElem = document.createElement('a');
-  dlAnchorElem.setAttribute("href", dataStr);
-  dlAnchorElem.setAttribute("download", "dados_lgpd_portabilidade.json");
-  dlAnchorElem.click();
+// Exportação e Exclusão LGPD (dados reais via /api/lgpd)
+async function exportUserData() {
+  if (!requireAuth()) return;
+  try {
+    const res = await fetch('/api/lgpd/export', { headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Falha ao exportar seus dados.');
+
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data, null, 2));
+    const dlAnchorElem = document.createElement('a');
+    dlAnchorElem.setAttribute("href", dataStr);
+    dlAnchorElem.setAttribute("download", "dados_lgpd_portabilidade.json");
+    dlAnchorElem.click();
+    showToast('Seu arquivo de exportação foi preparado.', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
 }
 
-function deleteUserAccount() {
-  if (confirm("Tem certeza que deseja solicitar a eliminação dos seus dados conforme o Art. 18 da LGPD?")) {
-    showToast('Solicitação registrada com sucesso.', 'success');
-    alert("Solicitação registrada sob o protocolo #LGPD-" + Math.floor(Math.random() * 899999 + 100000));
+async function deleteUserAccount() {
+  if (!requireAuth()) return;
+  if (!confirm("Tem certeza que deseja solicitar a eliminação dos seus dados conforme o Art. 18 da LGPD? Esta ação é irreversível.")) {
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/lgpd/account', { method: 'DELETE', headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Falha ao processar a exclusão.');
+
+    showToast(data.message, 'success');
+    alert(`${data.message}\nProtocolo: ${data.protocolo_exclusao}`);
+    logout();
+  } catch (err) {
+    showToast(err.message, 'error');
   }
 }

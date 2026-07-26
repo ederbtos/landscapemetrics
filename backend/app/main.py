@@ -15,7 +15,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[1]  # backend/ — para `import app.api.routes...`
+PROJECT_ROOT = ROOT_DIR.parent  # raiz do repo — onde vivem static/, app.py, clustering.py etc.
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -61,7 +62,7 @@ app.include_router(lgpd_routes.router)
 app.include_router(user_routes.router)
 app.include_router(supervised_routes.router)
 
-static_dir = os.path.join(ROOT_DIR, "static")
+static_dir = os.path.join(PROJECT_ROOT, "static")
 if os.path.exists(static_dir):
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 

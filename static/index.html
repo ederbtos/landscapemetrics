@@ -70,10 +70,10 @@
 
     <!-- Navegação de Abas -->
     <nav class="tabs">
-      <button class="tab-btn active" onclick="switchTab('tab-analise')">📍 Análise de Paisagem</button>
-      <button class="tab-btn" onclick="switchTab('tab-sse')">🧬 Matriz Socioecológica & Clustering</button>
-      <button class="tab-btn" onclick="switchTab('tab-lgpd')">📜 Privacidade & LGPD</button>
-      <button class="tab-btn" onclick="switchTab('tab-ajuda')">❓ Ajuda & Guia</button>
+      <button class="tab-btn active" onclick="switchTab(event, 'tab-analise')">📍 Análise de Paisagem</button>
+      <button class="tab-btn" onclick="switchTab(event, 'tab-sse')">🧬 Matriz Socioecológica & Clustering</button>
+      <button class="tab-btn" onclick="switchTab(event, 'tab-lgpd')">📜 Privacidade & LGPD</button>
+      <button class="tab-btn" onclick="switchTab(event, 'tab-ajuda')">❓ Ajuda & Guia</button>
     </nav>
 
     <!-- ABA 1: Análise de Paisagem -->
@@ -122,6 +122,20 @@
               <option value="mapbiomas">MapBiomas (Google Earth Engine)</option>
               <option value="geotiff">Meu Raster (GeoTIFF Próprio)</option>
             </select>
+          </div>
+
+          <div id="gee-credentials-group" class="form-group">
+            <div id="gee-credentials-status" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+              Verificando credenciais do Earth Engine...
+            </div>
+            <details id="gee-credentials-details">
+              <summary style="cursor: pointer; font-size: 0.85rem; color: var(--accent-cyan);">🔑 Cadastrar/atualizar credencial do Earth Engine</summary>
+              <div style="margin-top: 0.75rem;">
+                <label>Cole o JSON da conta de serviço do Earth Engine:</label>
+                <textarea id="gee-credentials-json" rows="4" placeholder='{"type": "service_account", "client_email": "...", ...}'></textarea>
+                <button class="btn-outline" style="margin-top: 0.5rem;" onclick="saveGeeCredentials()">Salvar credencial</button>
+              </div>
+            </details>
           </div>
 
           <div id="geotiff-upload-group" class="form-group" style="display: none;">
@@ -292,6 +306,7 @@
   <!-- Modal Autenticação (Login / Cadastro) -->
   <div id="auth-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content">
+      <button class="modal-close" type="button" onclick="closeAuthModal()" aria-label="Fechar e continuar navegando sem login">✕</button>
       <h3 id="auth-modal-title">Acesso Restrito - Identifique-se 🔑</h3>
       <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
         Para visualizar análises, calcular métricas ou acessar a Matriz SSE, você precisa estar autenticado.
