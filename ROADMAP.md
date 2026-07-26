@@ -418,6 +418,60 @@ Google. Em vez de depender só da credencial OAuth, foi adicionado um sistema de
 
 ## Próxima fase
 
+## Atividades pendentes (snapshot 2026-07-26)
+
+Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo plano. Esta seção
+é pensada para servir como ponto de retomada caso seja necessário continuar o trabalho depois.
+
+- **Criar schema (4 tabelas) + scripts de seed + rotas** — pendente
+- **Ligar routers/tabelas novas e validar boot limpo do backend** — pendente
+- **Escrever e rodar testes unitários (16 novos) + corrigir bug de colisão app/app** — pendente
+- **Criar utilitário de reconserto de município NULL no PRODES** — pendente
+- **Validar PRODES e IBGE ao vivo (pilotos reais)** — pendente
+- **Validar MapBiomas via Earth Engine com credencial real de ederbtos@gmail.com** — pendente
+- **Rodar seeds em background (malha municipal, PRODES, MapBiomas)** — em progresso
+- **Atualizar ROADMAP.md com a Fase 10** — concluído
+- **Checar contenção de escrita no SQLite com 3 jobs concorrentes** — concluído
+- **Depois que malha terminar: rodar `reresolve_prodes_municipios.py` e reprocessar UFs puladas** — pendente
+- **ANA hidroclimática — bloqueado (aguardando credencial `hidro@ana.gov.br`)** — pendente
+- **Agendar/verificar health-check periódico para os jobs long-running (wakeups)** — concluído
+
+### Logs resumidos (checagem rápida)
+
+```
+=== MUNICIPIOS (ultimas linhas) ===
+2026-07-26 10:14:10,982 - INFO - UF PB concluída.
+2026-07-26 10:14:11,297 - INFO - PR: 399 municípios na malha, 399 na lista de localidades
+2026-07-26 10:17:41,766 - INFO - UF PR concluída.
+2026-07-26 10:17:42,167 - INFO - PE: 185 municípios na malha, 185 na lista de localidades
+=== PRODES (ultimas linhas) ===
+2026-07-26 10:12:35,044 - INFO - Bioma amazonia: 60000 features processadas até agora (índice atual 60000).
+2026-07-26 10:14:20,376 - INFO - Bioma amazonia: 80000 features processadas até agora (índice atual 80000).
+2026-07-26 10:16:05,533 - INFO - Bioma amazonia: 100000 features processadas até agora (índice atual 100000).
+2026-07-26 10:17:54,789 - INFO - Bioma amazonia: 120000 features processadas até agora (índice atual 120000).
+=== MAPBIOMAS (ultimas linhas) ===
+2026-07-26 10:17:49,471 - INFO - UF AC / ano 2004: 197 linhas (município x classe) salvas.
+2026-07-26 10:18:27,905 - INFO - UF AC / ano 2005: 197 linhas (município x classe) salvas.
+=== erros de lock em algum log? ===
+```
+
+Nenhum erro de lock detectado nas checagens iniciais; os três jobs seguem rodando:
+
+- **Malha municipal**: em PE (21ª de 27 UFs) — perto do fim.
+- **PRODES**: Amazônia ~120k de ~835k features (~14%).
+- **MapBiomas/Earth Engine**: processando AC (2004–2005 feitos); todo o processo (27 UFs × 21 anos)
+  pode levar várias horas.
+
+### Próximos passos sugeridos
+
+- Aguardar conclusão dos jobs de ingestão e re-checar logs (health-check agendado a cada 30min).
+- Quando a malha municipal terminar, rodar `scripts/reresolve_prodes_municipios.py` para consertar
+  municípios NULL do PRODES e reprocessar UFs que faltarem no MapBiomas.
+- Depois que os dados nacionais estiverem íntegros, proceder com a criação das rotas e testes
+  unitários (priorizar `backend/app/db/` e `tests/test_backend_db_national.py`).
+
+> Agendado: health-check periódico cada 30 minutos para verificar progresso e erros.
+
 ### Fase 4 — Deploy
 
 Toda a mecânica está automatizada; o que falta é só a execução — decisão de infraestrutura que
