@@ -3,9 +3,9 @@ Descrição da funcionalidade
 ---------------------------
 Ponto de entrada da API FastAPI — substitui `app.py::main()` como ponto de
 entrada do processo (antes `streamlit run app.py`, agora
-`uvicorn app.main:app`). Fase 1: só monta autenticação; as rotas de
-análise/credenciais/IBGE/etc. entram nas Fases 2-3 (ver
-C:\\Users\\TRENI\\.claude\\plans\\elegant-exploring-crescent.md).
+`uvicorn app.main:app`). Monta autenticação, análise/credenciais/IBGE/SSE/
+LGPD/supervisionado, além dos dados de referência nacionais (malha
+municipal, MapBiomas agregado, PRODES, ANA — ver `scripts/seed_*.py`).
 """
 import os
 import sys
@@ -21,11 +21,14 @@ PROJECT_ROOT = ROOT_DIR.parent  # raiz do repo — onde vivem static/, app.py, c
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from app.api.routes import ana_hidroclimatica as ana_routes
 from app.api.routes import auth as auth_routes
 from app.api.routes import credentials as credentials_routes
 from app.api.routes import ibge as ibge_routes
 from app.api.routes import lgpd as lgpd_routes
+from app.api.routes import mapbiomas_stats as mapbiomas_stats_routes
 from app.api.routes import metrics as metrics_routes
+from app.api.routes import prodes as prodes_routes
 from app.api.routes import sse as sse_routes
 from app.api.routes import supervised as supervised_routes
 from app.api.routes import user as user_routes
@@ -62,6 +65,9 @@ app.include_router(metrics_routes.router)
 app.include_router(lgpd_routes.router)
 app.include_router(user_routes.router)
 app.include_router(supervised_routes.router)
+app.include_router(prodes_routes.router)
+app.include_router(mapbiomas_stats_routes.router)
+app.include_router(ana_routes.router)
 
 static_dir = os.path.join(PROJECT_ROOT, "static")
 

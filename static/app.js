@@ -56,6 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupAccessibility();
   checkAuthSession();
   toggleTifUpload();
+  updateStepper();
 });
 
 let authMode = 'login'; // 'login' ou 'register'
@@ -68,6 +69,7 @@ function checkAuthSession() {
   const token = localStorage.getItem('access_token');
   const userEmail = localStorage.getItem('user_email');
   const container = document.getElementById('user-session-container');
+  const appShell = document.getElementById('app-shell');
 
   if (token && userEmail) {
     container.innerHTML = `
@@ -75,9 +77,12 @@ function checkAuthSession() {
       <button onclick="logout()" class="btn-outline" style="margin-left: 0.5rem; padding: 0.3rem 0.6rem; font-size: 0.8rem;">Sair</button>
     `;
     closeAuthModal();
+    appShell.style.display = 'flex';
     loadGeeCredentialsStatus();
+    updateStepper();
   } else {
     container.innerHTML = `<button id="btn-open-login" class="btn-primary" onclick="openAuthModal()">Entrar / Cadastrar</button>`;
+    appShell.style.display = 'none';
     openAuthModal();
   }
 }
@@ -176,6 +181,7 @@ function initMap() {
   map.on('click', (e) => {
     selectedPoint = e.latlng;
     updateMapMarker();
+    updateStepper();
   });
 }
 
@@ -294,6 +300,8 @@ async function loadMunicipios() {
 }
 
 // Credenciais do Earth Engine (obrigatórias para a fonte MapBiomas)
+let hasGeeCredentials = false;
+
 async function loadGeeCredentialsStatus() {
   const statusEl = document.getElementById('gee-credentials-status');
   if (!localStorage.getItem('access_token')) {
@@ -304,12 +312,58 @@ async function loadGeeCredentialsStatus() {
     const res = await fetch('/api/credentials/', { headers: authHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Falha ao verificar credenciais.');
-    statusEl.textContent = data.has_credentials
+    hasGeeCredentials = !!data.has_credentials;
+    statusEl.textContent = hasGeeCredentials
       ? `✅ Credencial cadastrada (${data.client_email})`
       : '⚠️ Nenhuma credencial do Earth Engine cadastrada — obrigatória para usar a fonte MapBiomas.';
   } catch (err) {
+    hasGeeCredentials = false;
     statusEl.textContent = 'Não foi possível verificar o status da credencial.';
   }
+  updateStepper();
+}
+
+// Stepper do passo a passo (dados iniciais + parametrização) — acende cada
+// passo conforme os campos exigidos por ele forem preenchidos, e só libera
+// o botão de calcular quando os passos 1 e 2 estiverem completos.
+function updateStepper() {
+  const roiType = document.getElementById('roi-type').value;
+  const step1Done = roiType === 'municipio'
+    ? !!document.getElementById('select-municipio').value
+    : !!selectedPoint;
+
+  const dataSource = document.getElementById('data-source').value;
+  const tifInput = document.getElementById('tif-file');
+  const hasTif = !!(tifInput && tifInput.files && tifInput.files.length > 0);
+  const step2Done = dataSource === 'mapbiomas' ? hasGeeCredentials : hasTif;
+
+  const setStepState = (n, done, pendingLabel, doneLabel) => {
+    const el = document.getElementById(`step-${n}`);
+    const number = document.getElementById(`step-${n}-number`);
+    const status = document.getElementById(`step-${n}-status`);
+    el.classList.toggle('done', done);
+    el.classList.toggle('pending', !done);
+    number.textContent = done ? '✓' : String(n);
+    status.textContent = done ? doneLabel : pendingLabel;
+  };
+
+  setStepState(1, step1Done,
+    'Dado inicial obrigatório — defina um ponto ou município.',
+    'Área de interesse definida.');
+
+  setStepState(2, step2Done,
+    dataSource === 'mapbiomas'
+      ? 'Parametrização obrigatória — cadastre sua credencial do Earth Engine.'
+      : 'Parametrização obrigatória — envie um arquivo GeoTIFF.',
+    'Fonte de dados parametrizada.');
+
+  const step3Ready = step1Done && step2Done;
+  document.getElementById('step-3').classList.toggle('done', step3Ready);
+  document.getElementById('step-3').classList.toggle('pending', !step3Ready);
+  document.getElementById('step-3-status').textContent = step3Ready
+    ? 'Tudo pronto — pode calcular.'
+    : 'Disponível assim que os passos 1 e 2 estiverem completos.';
+  document.getElementById('btn-compute').disabled = !step3Ready;
 }
 
 async function saveGeeCredentials() {

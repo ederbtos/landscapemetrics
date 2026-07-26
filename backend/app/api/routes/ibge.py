@@ -1,10 +1,13 @@
 """
 Rotas para integração com a API do IBGE (Localidades, Malhas Territoriais e População Estimada)
 """
+import json
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, status
 import requests
 import logging
+
+from app.db import municipios as municipios_db
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,30 @@ def get_municipios(uf: str):
         return [{"id": str(m["id"]), "nome": m["nome"]} for m in sorted(munis, key=lambda x: x["nome"])]
     except Exception as err:
         logger.error(f"Erro ao buscar municípios no IBGE para {uf}: {err}")
+        raise HTTPException(status_code=502, detail=f"Erro de comunicação com a API do IBGE: {err}")
+
+
+@router.get("/municipios/{codigo}/malha")
+def get_municipio_malha(codigo: str):
+    """Limite territorial (GeoJSON) do município — checa o cache nacional
+    (`municipios_malha`, ver `scripts/seed_municipios_malha.py`) primeiro;
+    se ainda não estiver cacheado, cai na chamada ao vivo à API de malhas do
+    IBGE (mesma função usada pelo pipeline de análise em
+    `services/landscape.py`), nunca retorna vazio silenciosamente."""
+    cached = municipios_db.get_municipio_malha(codigo)
+    if cached is not None:
+        return json.loads(cached["geojson"])
+
+    try:
+        res = requests.get(
+            f"https://servicodados.ibge.gov.br/api/v3/malhas/municipios/{codigo}",
+            params={"formato": "application/vnd.geo+json", "qualidade": "minima"},
+            timeout=15,
+        )
+        res.raise_for_status()
+        return res.json()
+    except Exception as err:
+        logger.error(f"Erro ao buscar malha do município {codigo} no IBGE: {err}")
         raise HTTPException(status_code=502, detail=f"Erro de comunicação com a API do IBGE: {err}")
 
 

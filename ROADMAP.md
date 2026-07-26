@@ -1,6 +1,6 @@
 # Roadmap — Landscape Metrics Extractor
 
-## Progresso geral: 100% 🎉
+## Progresso geral: ~95%
 
 | Fase | Descrição | Status | % |
 | --- | --- | --- | --- |
@@ -13,8 +13,12 @@
 | 7 | Agrupamento Multivariado K-Means & DBSCAN com PCA 2D e curva do cotovelo | ✅ Concluída | 100% |
 | 8 | Suporte a Banco de Dados PostgreSQL & Escritório Virtual com isolamento por usuário | ✅ Concluída | 100% |
 | 9 | PWA Mobile, Governança LGPD, Defesa em Profundidade de IA, Acessibilidade WCAG/VLibras e Avatares 3D (Maria Júlia & Pedro) | ✅ Concluída | 100% |
+| 10 | Dados de referência nacionais pré-carregados no banco (malha municipal IBGE, MapBiomas agregado, PRODES, ANA) | 🔧 Em andamento | ~60% |
 
-> **Plataforma 100% Completa**: Todas as fases planejadas, módulos de machine learning, infraestrutura PostgreSQL/Docker, segurança, LGPD, acessibilidade digital e assistentes virtuais 3D foram implementados, testados e integrados.
+> A Fase 10 (2026-07-26) cobre a pré-carga de dados nacionais de referência no banco do backend
+> FastAPI — ver detalhamento abaixo. Malha municipal e PRODES têm ingestão real rodando; MapBiomas
+> agregado tem o script pronto mas não validado (sem credencial de Earth Engine disponível nesta
+> sessão); ANA está bloqueada por credencial (ação do operador, não de código).
 
 
 ## Status atual (2026-07-04)
@@ -329,6 +333,60 @@
     Nova dependência: `openpyxl` (`requirements.txt`).
   - Coberto por `tests/test_app_municipio_batch.py` (detecção de colunas, processamento em lote com
     isolamento de erro, reuso de cache, montagem da planilha).
+- **Fase 10 — Dados de referência nacionais pré-carregados no banco (2026-07-26)**: quatro tabelas
+  novas em `backend/app/db/` (`municipios.py`, `mapbiomas_stats.py`, `prodes.py`,
+  `ana_hidroclimatica.py`), mesmo idioma de `schema.py` (sem ORM/migration, `CREATE TABLE IF NOT
+  EXISTS` + `ALTER TABLE` defensivo), populadas por scripts em `scripts/seed_*.py`:
+  - **`municipios_malha`**: malha municipal do Brasil inteiro (~5.570 municípios), cacheada uma vez
+    via `scripts/seed_municipios_malha.py` — elimina a dependência de chamada em tempo real à API
+    do IBGE por município. Confirmado ao vivo que `GET /malhas/estados/{uf}?intrarregiao=municipio`
+    já retorna a malha da UF segmentada por município (uma feature por `codarea`), então o script
+    itera as 27 UFs em vez de ~5.570 chamadas individuais. `services/landscape.py::
+    _get_municipio_geojson_cached` checa esse cache antes de cair no caminho antigo (chamada ao
+    vivo ao IBGE) — nunca deixa de resolver um município só porque o cache ainda não cobriu aquela
+    área. Nova rota `GET /api/ibge/municipios/{codigo}/malha` com o mesmo fallback.
+  - **`prodes_desmatamento`**: registros de desmatamento do PRODES/INPE via WFS do GeoServer do
+    TerraBrasilis (`scripts/seed_prodes.py`), para os 6 biomas monitorados (Amazônia, Cerrado,
+    Caatinga, Mata Atlântica, Pampa, Pantanal — layers confirmadas ao vivo via `GetCapabilities`).
+    Volume real descoberto em produção: só a camada da Amazônia tem ~835 mil features
+    (`totalFeatures`) — a ingestão completa passa de 1-2 milhões de registros e leva horas; o
+    script pagina via `startIndex`/`count`, mantém um checkpoint em disco
+    (`scripts/.checkpoints/prodes.json`) para retomar sem re-baixar páginas já processadas, e isola
+    erro por feature (loga e segue). O município é resolvido por junção espacial (centroide da
+    feature dentro do polígono do município, via `shapely.strtree.STRtree` — muito mais rápido que
+    varredura linear contra os ~5.570 municípios); fica `NULL` se a malha daquele município ainda
+    não estiver cacheada, nunca um palpite. Área (`area_km`) e ano (`year`) vêm prontos do próprio
+    INPE, confirmados via amostra ao vivo — não recalculados. Nova rota
+    `GET /api/prodes/municipio/{codigo}`.
+  - **`mapbiomas_municipio_stats`**: área (hectares) por classe/ano/município — decisão de projeto
+    (confirmada com o usuário): agregado, não pixel raster (guardar o raster nacional de 20 anos
+    seria da ordem de dezenas de TB). MapBiomas não tem API pública para isso (só Excel de download
+    manual em brasil.mapbiomas.org/estatisticas/, confirmado via pesquisa); `scripts/
+    seed_mapbiomas_stats.py` calcula via Earth Engine (`reduceRegions` + `frequencyHistogram` contra
+    `municipios_malha`, reaproveitando a mesma lista de assets com fallback de
+    `_extract_mapbiomas_pixels`, em lotes por UF) como caminho principal, com `--from-excel` como
+    alternativa caso prefira importar o arquivo oficial manualmente. **Não validado ao vivo nesta
+    sessão** — sem credencial de conta de serviço do Earth Engine disponível para testar; a lógica
+    de agregação (histograma de pixels → hectares) e o parsing do Excel foram implementados mas
+    ainda não rodaram contra dado real. Nova rota `GET /api/mapbiomas/serie/{municipio_codigo}` —
+    melhora a predição de Markov já existente (hoje limitada a upload manual de GeoTIFFs) ao
+    oferecer histórico real de qualquer município já ingerido, sem exigir upload.
+  - **`ana_estacoes`/`ana_serie_historica`**: schema pronto, mas ingestão real bloqueada — a API
+    HidroWebService da ANA exige credencial pedida manualmente por e-mail a `hidro@ana.gov.br`
+    (assunto "Solicitação de acesso à API", confirmado no manual oficial), não é algo resolvido por
+    código. `scripts/seed_ana_hidroclimatica.py` já verifica a credencial e para com uma mensagem
+    explicando o bloqueio em vez de fabricar dado. Rotas `GET /api/ana/estacoes` e
+    `GET /api/ana/serie/{codigo}` já existem, retornam lista vazia até a ingestão real rodar.
+  - Explicitamente fora desta fase (decisão registrada com o usuário): verificação/diff automático
+    de "o que mudou na fonte" desde a última ingestão, e integração automática desses dados na
+    Matriz SSE/clustering — ambos ficam para uma fase futura.
+  - Coberto por `tests/test_backend_db_national.py` (16 testes, CRUD/upsert dos 4 módulos novos).
+    De brinde, corrigido um bug de colisão de nomes pré-existente entre o módulo `app` (Streamlit,
+    raiz) e o pacote `app` do backend quando a suíte inteira roda numa única sessão pytest — os
+    dois arquivos de teste que importam o pacote `app` do backend agora descartam qualquer
+    `sys.modules["app"]` stale antes de importar (`tests/test_backend_app.py` e
+    `tests/test_backend_db_national.py`); suíte completa: 138 testes passando (era 121 + esse bug
+    de colisão intermitente).
 
 ### 🔄 Mudança de arquitetura (2026-07-04): login por e-mail/senha + JWT, com Google OAuth opcional
 

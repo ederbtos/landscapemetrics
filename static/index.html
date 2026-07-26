@@ -52,8 +52,27 @@
     </div>
   </header>
 
-  <!-- Container Principal -->
-  <main class="container">
+  <!-- Layout Principal: menu lateral + conteúdo (só visível autenticado, ver checkAuthSession em app.js) -->
+  <div id="app-shell" class="app-layout" style="display: none;">
+
+    <!-- Menu Lateral -->
+    <aside class="sidebar" aria-label="Navegação principal">
+      <button class="tab-btn active" onclick="switchTab(event, 'tab-analise')">
+        <span class="tab-btn-icon">📍</span> Análise de Paisagem
+      </button>
+      <button class="tab-btn" onclick="switchTab(event, 'tab-sse')">
+        <span class="tab-btn-icon">🧬</span> Matriz Socioecológica & Clustering
+      </button>
+      <button class="tab-btn" onclick="switchTab(event, 'tab-lgpd')">
+        <span class="tab-btn-icon">📜</span> Privacidade & LGPD
+      </button>
+      <button class="tab-btn" onclick="switchTab(event, 'tab-ajuda')">
+        <span class="tab-btn-icon">❓</span> Ajuda & Guia
+      </button>
+    </aside>
+
+    <!-- Conteúdo -->
+    <main class="container">
 
     <section class="hero-panel" aria-label="Resumo do fluxo da aplicação">
       <div class="hero-copy">
@@ -68,84 +87,119 @@
       </div>
     </section>
 
-    <!-- Navegação de Abas -->
-    <nav class="tabs">
-      <button class="tab-btn active" onclick="switchTab(event, 'tab-analise')">📍 Análise de Paisagem</button>
-      <button class="tab-btn" onclick="switchTab(event, 'tab-sse')">🧬 Matriz Socioecológica & Clustering</button>
-      <button class="tab-btn" onclick="switchTab(event, 'tab-lgpd')">📜 Privacidade & LGPD</button>
-      <button class="tab-btn" onclick="switchTab(event, 'tab-ajuda')">❓ Ajuda & Guia</button>
-    </nav>
-
     <!-- ABA 1: Análise de Paisagem -->
     <section id="tab-analise" class="tab-content">
       <div class="grid-dashboard">
         
-        <!-- Coluna 1: Parâmetros e Seleção da Área -->
+        <!-- Coluna 1: Stepper de Parâmetros e Seleção da Área -->
         <div class="glass-card">
-          <div class="card-title">1) Área de Interesse & Fonte de Dados 🛰️</div>
-          
-          <div class="form-group">
-            <label>Tipo de Área de Interesse:</label>
-            <select id="roi-type" onchange="toggleRoiInputs()">
-              <option value="point">📌 Ponto + Buffer</option>
-              <option value="municipio">🏘️ Limite Municipal (IBGE)</option>
-            </select>
-          </div>
+          <div class="card-title">Passo a passo da análise 🛰️</div>
+          <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1.25rem;">
+            Cada etapa mostra os dados iniciais e parametrizações necessários antes de calcular. O ✓ acende conforme você completa cada uma.
+          </p>
 
-          <!-- Seleção de Município IBGE -->
-          <div id="municipio-inputs" style="display: none;">
-            <div class="form-group">
-              <label>Estado (UF):</label>
-              <select id="select-uf" onchange="loadMunicipios()"><option>Carregando UFs...</option></select>
-            </div>
-            <div class="form-group">
-              <label>Município:</label>
-              <select id="select-municipio"><option>Selecione um estado...</option></select>
-            </div>
-          </div>
+          <div class="stepper">
 
-          <!-- Seleção por Ponto e Mapa -->
-          <div id="point-inputs">
-            <div class="form-group">
-              <label>Clique no mapa abaixo para selecionar o Ponto de Interesse:</label>
-              <div id="map"></div>
-            </div>
-            <div class="form-group">
-              <label>Raio do Buffer (metros): <span id="buffer-val">5000</span>m</label>
-              <input type="range" id="buffer-dist" min="500" max="20000" step="500" value="5000" oninput="document.getElementById('buffer-val').innerText = this.value">
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label>Fonte de Dados de Cobertura do Solo:</label>
-            <select id="data-source" onchange="toggleTifUpload()">
-              <option value="mapbiomas">MapBiomas (Google Earth Engine)</option>
-              <option value="geotiff">Meu Raster (GeoTIFF Próprio)</option>
-            </select>
-          </div>
-
-          <div id="gee-credentials-group" class="form-group">
-            <div id="gee-credentials-status" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
-              Verificando credenciais do Earth Engine...
-            </div>
-            <details id="gee-credentials-details">
-              <summary style="cursor: pointer; font-size: 0.85rem; color: var(--accent-cyan);">🔑 Cadastrar/atualizar credencial do Earth Engine</summary>
-              <div style="margin-top: 0.75rem;">
-                <label>Cole o JSON da conta de serviço do Earth Engine:</label>
-                <textarea id="gee-credentials-json" rows="4" placeholder='{"type": "service_account", "client_email": "...", ...}'></textarea>
-                <button class="btn-outline" style="margin-top: 0.5rem;" onclick="saveGeeCredentials()">Salvar credencial</button>
+            <!-- Passo 1: Área de Interesse -->
+            <div class="step" id="step-1">
+              <div class="step-header">
+                <span class="step-number" id="step-1-number">1</span>
+                <div>
+                  <div class="step-title">Área de interesse</div>
+                  <div class="step-status" id="step-1-status">Dado inicial obrigatório — defina um ponto ou município.</div>
+                </div>
               </div>
-            </details>
-          </div>
+              <div class="step-body">
+                <div class="form-group">
+                  <label>Tipo de Área de Interesse:</label>
+                  <select id="roi-type" onchange="toggleRoiInputs(); updateStepper();">
+                    <option value="point">📌 Ponto + Buffer</option>
+                    <option value="municipio">🏘️ Limite Municipal (IBGE)</option>
+                  </select>
+                </div>
 
-          <div id="geotiff-upload-group" class="form-group" style="display: none;">
-            <label>Upload do arquivo GeoTIFF (.tif):</label>
-            <input type="file" id="tif-file" accept=".tif,.tiff">
-          </div>
+                <!-- Seleção de Município IBGE -->
+                <div id="municipio-inputs" style="display: none;">
+                  <div class="form-group">
+                    <label>Estado (UF):</label>
+                    <select id="select-uf" onchange="loadMunicipios()"><option>Carregando UFs...</option></select>
+                  </div>
+                  <div class="form-group">
+                    <label>Município:</label>
+                    <select id="select-municipio" onchange="updateStepper()"><option>Selecione um estado...</option></select>
+                  </div>
+                </div>
 
-          <button id="btn-compute" class="btn-primary" style="width: 100%; margin-top: 1rem;" onclick="runLandscapeAnalysis()">
-            🧮 Calcular Métricas da Paisagem
-          </button>
+                <!-- Seleção por Ponto e Mapa -->
+                <div id="point-inputs">
+                  <div class="form-group">
+                    <label>Clique no mapa abaixo para selecionar o Ponto de Interesse:</label>
+                    <div id="map"></div>
+                  </div>
+                  <div class="form-group">
+                    <label>Raio do Buffer (metros): <span id="buffer-val">5000</span>m</label>
+                    <input type="range" id="buffer-dist" min="500" max="20000" step="500" value="5000" oninput="document.getElementById('buffer-val').innerText = this.value">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Passo 2: Fonte de Dados & Parametrização -->
+            <div class="step" id="step-2">
+              <div class="step-header">
+                <span class="step-number" id="step-2-number">2</span>
+                <div>
+                  <div class="step-title">Fonte de dados & parametrização</div>
+                  <div class="step-status" id="step-2-status">Escolha a origem da cobertura do solo e configure o que ela exige.</div>
+                </div>
+              </div>
+              <div class="step-body">
+                <div class="form-group">
+                  <label>Fonte de Dados de Cobertura do Solo:</label>
+                  <select id="data-source" onchange="toggleTifUpload(); updateStepper();">
+                    <option value="mapbiomas">MapBiomas (Google Earth Engine)</option>
+                    <option value="geotiff">Meu Raster (GeoTIFF Próprio)</option>
+                  </select>
+                </div>
+
+                <div id="gee-credentials-group" class="form-group">
+                  <div id="gee-credentials-status" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                    Verificando credenciais do Earth Engine...
+                  </div>
+                  <details id="gee-credentials-details">
+                    <summary style="cursor: pointer; font-size: 0.85rem; color: var(--accent-cyan);">🔑 Cadastrar/atualizar credencial do Earth Engine</summary>
+                    <div style="margin-top: 0.75rem;">
+                      <label>Cole o JSON da conta de serviço do Earth Engine:</label>
+                      <textarea id="gee-credentials-json" rows="4" placeholder='{"type": "service_account", "client_email": "...", ...}'></textarea>
+                      <button class="btn-outline" style="margin-top: 0.5rem;" onclick="saveGeeCredentials()">Salvar credencial</button>
+                    </div>
+                  </details>
+                </div>
+
+                <div id="geotiff-upload-group" class="form-group" style="display: none;">
+                  <label>Upload do arquivo GeoTIFF (.tif):</label>
+                  <input type="file" id="tif-file" accept=".tif,.tiff" onchange="updateStepper()">
+                </div>
+              </div>
+            </div>
+
+            <!-- Passo 3: Calcular -->
+            <div class="step" id="step-3">
+              <div class="step-header">
+                <span class="step-number" id="step-3-number">3</span>
+                <div>
+                  <div class="step-title">Calcular</div>
+                  <div class="step-status" id="step-3-status">Disponível assim que os passos 1 e 2 estiverem completos.</div>
+                </div>
+              </div>
+              <div class="step-body">
+                <button id="btn-compute" class="btn-primary" style="width: 100%;" onclick="runLandscapeAnalysis()" disabled>
+                  🧮 Calcular Métricas da Paisagem
+                </button>
+              </div>
+            </div>
+
+          </div>
         </div>
 
         <!-- Coluna 2: Resultados da Análise -->
@@ -269,7 +323,8 @@
       </div>
     </section>
 
-  </main>
+    </main>
+  </div>
 
   <!-- Widget Flutuante dos Avatares 3D -->
   <div class="avatar-widget">
@@ -303,13 +358,13 @@
     </div>
   </div>
 
-  <!-- Modal Autenticação (Login / Cadastro) -->
+  <!-- Modal Autenticação (Login / Cadastro) — obrigatório: sem X, só sai voltando para a landing -->
   <div id="auth-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content">
-      <button class="modal-close" type="button" onclick="closeAuthModal()" aria-label="Fechar e continuar navegando sem login">✕</button>
+      <button class="modal-close" type="button" onclick="window.location.href='/landing.html'" aria-label="Voltar para a página inicial">✕</button>
       <h3 id="auth-modal-title">Acesso Restrito - Identifique-se 🔑</h3>
       <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
-        Para visualizar análises, calcular métricas ou acessar a Matriz SSE, você precisa estar autenticado.
+        As funcionalidades da plataforma só ficam disponíveis depois do login.
       </p>
 
       <form id="auth-form" onsubmit="handleAuthSubmit(event)">

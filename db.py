@@ -20,8 +20,12 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import bcrypt
 import pandas as pd
-import streamlit as st
 from cryptography.fernet import Fernet, InvalidToken
+
+try:
+    import streamlit as st
+except ImportError:
+    st = None
 
 logger = logging.getLogger(__name__)
 

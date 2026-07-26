@@ -20,6 +20,10 @@ import sqlite3
 from contextlib import closing
 
 from app.core.config import get_settings
+from app.db.ana_hidroclimatica import init_ana_hidroclimatica_tables
+from app.db.mapbiomas_stats import init_mapbiomas_stats_table
+from app.db.municipios import init_municipios_table
+from app.db.prodes import init_prodes_table
 
 
 def init_db() -> None:
@@ -105,3 +109,10 @@ def init_db() -> None:
             """
         )
         conn.commit()
+
+    # Dados de referência nacionais (malha municipal/MapBiomas/PRODES/ANA) —
+    # cada módulo cuida da própria tabela, mesma convenção acima.
+    init_municipios_table()
+    init_mapbiomas_stats_table()
+    init_prodes_table()
+    init_ana_hidroclimatica_tables()

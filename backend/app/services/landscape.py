@@ -1,13 +1,14 @@
 """
 Serviço de cálculo real de métricas de paisagem para a API FastAPI.
 
-Reaproveita as funções puras já implementadas e testadas em `app.py`
+Reaproveita as funções puras já implementadas e testadas em `landscape_core.py`
 (extração MapBiomas/GeoTIFF, PyLandStats, malha municipal do IBGE) em vez de
 duplicá-las — mesmo padrão já usado por `api/routes/sse.py`/`supervised.py`
 (que reaproveitam `clustering.py`/`supervised_models.py` via importlib).
-`app.py` é seguro de importar fora do Streamlit: só executa lógica de UI
-dentro de `main()`, chamada apenas sob `if __name__ == "__main__":` (ver
-docstring de app.py — os próprios testes do projeto já fazem `import app`).
+`landscape_core.py` não depende do Streamlit (extraído de `app.py` para esse
+fim exato), então este serviço importa direto dele em vez de `app.py`
+(que ainda faz `import streamlit` no topo e não é uma dependência do
+backend — ver `backend/requirements.txt`).
 
 Antes deste módulo, `POST /api/metrics/calculate` retornava sempre os mesmos
 números fixos, independente do ponto/município/arquivo enviado — este
@@ -24,6 +25,8 @@ from typing import Optional
 import ee
 import numpy as np
 
+from app.db import municipios as municipios_db
+
 
 def _load_legacy_module(module_name: str):
     root_dir = Path(__file__).resolve().parents[3]
@@ -32,7 +35,7 @@ def _load_legacy_module(module_name: str):
     return importlib.import_module(module_name)
 
 
-app_legacy = _load_legacy_module("app")
+landscape_core = _load_legacy_module("landscape_core")
 
 
 class LandscapeAnalysisError(RuntimeError):
@@ -41,8 +44,8 @@ class LandscapeAnalysisError(RuntimeError):
 
 class _UploadedFileAdapter:
     """Adapta bytes de um `UploadFile` do FastAPI para a interface duck-typed
-    que as funções de app.py esperam de um arquivo do Streamlit (`.name`,
-    `.size`, `.getbuffer()`/`.getvalue()`) — permite reusar
+    que as funções de landscape_core.py esperam de um arquivo do Streamlit
+    (`.name`, `.size`, `.getbuffer()`/`.getvalue()`) — permite reusar
     `extract_landscape_from_tif`/`validate_file_upload` sem alterá-las."""
 
     def __init__(self, filename: str, content: bytes):
@@ -78,11 +81,25 @@ def initialize_earth_engine(credentials: dict) -> None:
         ) from ex
 
 
+def _get_municipio_geojson_cached(municipio_codigo: str) -> dict | None:
+    """Checa `municipios_malha` (cache nacional pré-carregado, ver
+    `scripts/seed_municipios_malha.py`) antes de cair na chamada ao vivo à
+    API de malhas do IBGE (`landscape_core._ibge_get_municipio_geojson`) —
+    elimina a dependência de rede em tempo real para os municípios já
+    cacheados, mas nunca deixa de resolver um município só porque o cache
+    ainda não rodou (segue a mesma regra de "nunca fabricar dado": cache
+    miss cai no caminho antigo, não retorna vazio)."""
+    cached = municipios_db.get_municipio_malha(municipio_codigo)
+    if cached is not None:
+        return json.loads(cached["geojson"])
+    return landscape_core._ibge_get_municipio_geojson(municipio_codigo)
+
+
 def _build_mapbiomas_roi(point_lonlat, buffer_dist, municipio_geojson):
     if municipio_geojson is not None:
         from shapely.geometry import mapping
 
-        geom_shapely = app_legacy._municipio_geometry_shapely(municipio_geojson)
+        geom_shapely = landscape_core._municipio_geometry_shapely(municipio_geojson)
         return ee.Geometry(mapping(geom_shapely))
     if point_lonlat is None or buffer_dist is None:
         raise LandscapeAnalysisError(
@@ -94,8 +111,8 @@ def _build_mapbiomas_roi(point_lonlat, buffer_dist, municipio_geojson):
 
 def _extract_mapbiomas_pixels(roi_buffer):
     """Porta a seleção de asset (com fallback entre collections) e a
-    extração de pixels (sampleRectangle -> reduceRegion) de
-    `app.py::main()` para uma função pura, testável isoladamente da UI."""
+    extração de pixels (sampleRectangle -> reduceRegion) do antigo
+    `app.py::main()` (Streamlit) para uma função pura, testável isoladamente da UI."""
     try:
         mapbiomas_assets = [
             "projects/mapbiomas-public/assets/brazil/lulc/collection9/mapbiomas_collection90_integration_v1",
@@ -204,7 +221,7 @@ def run_landscape_analysis(
 
     municipio_geojson = None
     if municipio_codigo:
-        municipio_geojson = app_legacy._ibge_get_municipio_geojson(municipio_codigo)
+        municipio_geojson = _get_municipio_geojson_cached(municipio_codigo)
         if municipio_geojson is None:
             raise LandscapeAnalysisError(
                 f"Não foi possível obter o limite territorial do município (código "
@@ -234,15 +251,15 @@ def run_landscape_analysis(
         uploaded = _UploadedFileAdapter(tif_filename or "upload.tif", tif_bytes)
         try:
             if municipio_geojson is not None:
-                np_arr, resolution, _reproj = app_legacy.extract_landscape_from_tif(
+                np_arr, resolution, _reproj = landscape_core.extract_landscape_from_tif(
                     uploaded, region_geojson=municipio_geojson,
                 )
             elif point_lonlat is not None and buffer_dist is not None:
-                np_arr, resolution, _reproj = app_legacy.extract_landscape_from_tif(
+                np_arr, resolution, _reproj = landscape_core.extract_landscape_from_tif(
                     uploaded, point_lonlat, buffer_dist,
                 )
             else:
-                np_arr, resolution, _reproj = app_legacy.extract_landscape_from_tif(uploaded)
+                np_arr, resolution, _reproj = landscape_core.extract_landscape_from_tif(uploaded)
         except Exception as tif_error:
             raise LandscapeAnalysisError(
                 "Não foi possível extrair dados reais do GeoTIFF enviado. Isso não gera "
@@ -250,13 +267,13 @@ def run_landscape_analysis(
                 "Possíveis causas: buffer/município fora da área do raster, CRS do raster "
                 "inválido, raster com apenas nodata, ou arquivo corrompido."
             ) from tif_error
-        ano = app_legacy._extract_year_from_filename(tif_filename) if tif_filename else None
+        ano = landscape_core._extract_year_from_filename(tif_filename) if tif_filename else None
 
     else:
         raise LandscapeAnalysisError(f"Fonte de dados desconhecida: {data_source!r}")
 
-    ls, class_metrics_df = app_legacy._compute_class_metrics(np_arr, resolution)
-    landscape_metrics = app_legacy._compute_landscape_metrics(ls)
+    ls, class_metrics_df = landscape_core._compute_class_metrics(np_arr, resolution)
+    landscape_metrics = landscape_core._compute_landscape_metrics(ls)
 
     if municipio_nome:
         label = f"{municipio_nome}/{municipio_uf}" if municipio_uf else municipio_nome
@@ -265,7 +282,7 @@ def run_landscape_analysis(
     else:
         label = tif_filename or "Análise GeoTIFF"
 
-    fingerprint = app_legacy._compute_fingerprint(
+    fingerprint = landscape_core._compute_fingerprint(
         data_source,
         tif_bytes=tif_bytes,
         point_lonlat=point_lonlat,

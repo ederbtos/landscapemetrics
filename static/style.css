@@ -111,6 +111,13 @@ header {
   box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
 }
 
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 .btn-outline {
   background: transparent;
   color: var(--text-primary);
@@ -125,11 +132,82 @@ header {
   background: rgba(255, 255, 255, 0.05);
 }
 
-/* Layout Principal */
+/* Layout Principal: menu lateral + conteúdo */
+.app-layout {
+  display: flex;
+  align-items: flex-start;
+  max-width: 1500px;
+  margin: 0 auto;
+}
+
+.sidebar {
+  position: sticky;
+  top: 65px; /* altura aproximada do header sticky */
+  flex-shrink: 0;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1.5rem 1rem;
+  height: calc(100vh - 65px);
+  border-right: 1px solid var(--border-color);
+  background: rgba(11, 15, 25, 0.4);
+}
+
+.sidebar .tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  border-bottom: none;
+  border-left: 3px solid transparent;
+}
+
+.sidebar .tab-btn.active {
+  background: rgba(16, 185, 129, 0.1);
+  border-left-color: var(--accent-emerald);
+}
+
+.tab-btn-icon {
+  font-size: 1.1rem;
+}
+
 .container {
+  flex: 1;
+  min-width: 0;
   max-width: 1300px;
   margin: 2rem auto;
   padding: 0 1.5rem 3rem;
+}
+
+@media (max-width: 900px) {
+  .app-layout {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    position: static;
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .sidebar .tab-btn {
+    border-left: none;
+    border-bottom: 3px solid transparent;
+    white-space: nowrap;
+  }
+
+  .sidebar .tab-btn.active {
+    border-left-color: transparent;
+    border-bottom-color: var(--accent-emerald);
+  }
 }
 
 .hero-panel {
@@ -331,14 +409,80 @@ button:focus-visible, a:focus-visible {
   outline-offset: 2px;
 }
 
-/* Tabs */
-.tabs {
+/* Stepper — demonstra o passo a passo de dados iniciais e parametrização
+   exigidos antes de calcular; cada .step acende para "done" via updateStepper() em app.js. */
+.stepper {
   display: flex;
-  gap: 0.5rem;
-  border-bottom: 1px solid var(--border-color);
-  margin-bottom: 1.5rem;
+  flex-direction: column;
+  gap: 0;
 }
 
+.step {
+  position: relative;
+  padding: 0 0 1.5rem 0;
+  border-left: 2px solid var(--border-color);
+  margin-left: 0.85rem;
+  padding-left: 1.5rem;
+  transition: border-color 0.25s;
+}
+
+.step:last-child {
+  padding-bottom: 0;
+}
+
+.step.done {
+  border-left-color: var(--accent-emerald);
+}
+
+.step-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  margin-bottom: 0.9rem;
+}
+
+.step-number {
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  margin-left: -2.35rem;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  border: 2px solid var(--border-color);
+  color: var(--text-secondary);
+  font-weight: 700;
+  font-size: 0.9rem;
+  transition: all 0.25s;
+}
+
+.step.done .step-number {
+  background: var(--accent-emerald);
+  border-color: var(--accent-emerald);
+  color: #fff;
+}
+
+.step.pending .step-body {
+  opacity: 0.92;
+}
+
+.step-title {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.step-status {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-top: 0.15rem;
+}
+
+.step.done .step-status {
+  color: var(--accent-emerald);
+}
+
+/* Navegação de seções (menu lateral) */
 .tab-btn {
   padding: 0.75rem 1.25rem;
   background: transparent;
