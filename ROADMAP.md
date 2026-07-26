@@ -13,12 +13,15 @@
 | 7 | Agrupamento Multivariado K-Means & DBSCAN com PCA 2D e curva do cotovelo | ✅ Concluída | 100% |
 | 8 | Suporte a Banco de Dados PostgreSQL & Escritório Virtual com isolamento por usuário | ✅ Concluída | 100% |
 | 9 | PWA Mobile, Governança LGPD, Defesa em Profundidade de IA, Acessibilidade WCAG/VLibras e Avatares 3D (Maria Júlia & Pedro) | ✅ Concluída | 100% |
-| 10 | Dados de referência nacionais pré-carregados no banco (malha municipal IBGE, MapBiomas agregado, PRODES, ANA) | 🔧 Em andamento | ~60% |
+| 10 | Dados de referência nacionais pré-carregados no banco (malha municipal IBGE, MapBiomas agregado, PRODES, ANA) | 🔧 Em andamento | ~75% |
 
 > A Fase 10 (2026-07-26) cobre a pré-carga de dados nacionais de referência no banco do backend
-> FastAPI — ver detalhamento abaixo. Malha municipal e PRODES têm ingestão real rodando; MapBiomas
-> agregado tem o script pronto mas não validado (sem credencial de Earth Engine disponível nesta
-> sessão); ANA está bloqueada por credencial (ação do operador, não de código).
+> FastAPI — ver detalhamento abaixo. Malha municipal está 100% concluída (5.570 municípios).
+> PRODES está retomado e em andamento (Cerrado, após Amazônia/Pantanal concluídos). MapBiomas
+> agregado tem progresso parcial real (AC–GO/2010, ~193k linhas) mas está **pausado** — a
+> credencial de conta de serviço do Earth Engine usada na sessão anterior não foi encontrada nesta
+> retomada, e o usuário optou por não retomá-la agora (decisão registrada em 2026-07-26); ANA
+> está bloqueada por credencial (ação do operador, não de código).
 
 
 ## Status atual (2026-07-04)
@@ -418,59 +421,61 @@ Google. Em vez de depender só da credencial OAuth, foi adicionado um sistema de
 
 ## Próxima fase
 
-## Atividades pendentes (snapshot 2026-07-26)
+## Atividades pendentes (snapshot 2026-07-26, atualizado 17:41)
 
 Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo plano. Esta seção
-é pensada para servir como ponto de retomada caso seja necessário continuar o trabalho depois.
+é pensada como ponto de retomada caso seja necessário continuar o trabalho depois.
 
-- **Criar schema (4 tabelas) + scripts de seed + rotas** — pendente
-- **Ligar routers/tabelas novas e validar boot limpo do backend** — pendente
-- **Escrever e rodar testes unitários (16 novos) + corrigir bug de colisão app/app** — pendente
-- **Criar utilitário de reconserto de município NULL no PRODES** — pendente
-- **Validar PRODES e IBGE ao vivo (pilotos reais)** — pendente
-- **Validar MapBiomas via Earth Engine com credencial real de ederbtos@gmail.com** — pendente
-- **Rodar seeds em background (malha municipal, PRODES, MapBiomas)** — em progresso
-- **Atualizar ROADMAP.md com a Fase 10** — concluído
-- **Checar contenção de escrita no SQLite com 3 jobs concorrentes** — concluído
-- **Depois que malha terminar: rodar `reresolve_prodes_municipios.py` e reprocessar UFs puladas** — pendente
-- **ANA hidroclimática — bloqueado (aguardando credencial `hidro@ana.gov.br`)** — pendente
-- **Agendar/verificar health-check periódico para os jobs long-running (wakeups)** — concluído
-
-### Logs resumidos (checagem rápida)
-
-```
-=== MUNICIPIOS (ultimas linhas) ===
-2026-07-26 10:14:10,982 - INFO - UF PB concluída.
-2026-07-26 10:14:11,297 - INFO - PR: 399 municípios na malha, 399 na lista de localidades
-2026-07-26 10:17:41,766 - INFO - UF PR concluída.
-2026-07-26 10:17:42,167 - INFO - PE: 185 municípios na malha, 185 na lista de localidades
-=== PRODES (ultimas linhas) ===
-2026-07-26 10:12:35,044 - INFO - Bioma amazonia: 60000 features processadas até agora (índice atual 60000).
-2026-07-26 10:14:20,376 - INFO - Bioma amazonia: 80000 features processadas até agora (índice atual 80000).
-2026-07-26 10:16:05,533 - INFO - Bioma amazonia: 100000 features processadas até agora (índice atual 100000).
-2026-07-26 10:17:54,789 - INFO - Bioma amazonia: 120000 features processadas até agora (índice atual 120000).
-=== MAPBIOMAS (ultimas linhas) ===
-2026-07-26 10:17:49,471 - INFO - UF AC / ano 2004: 197 linhas (município x classe) salvas.
-2026-07-26 10:18:27,905 - INFO - UF AC / ano 2005: 197 linhas (município x classe) salvas.
-=== erros de lock em algum log? ===
-```
-
-Nenhum erro de lock detectado nas checagens iniciais; os três jobs seguem rodando:
-
-- **Malha municipal**: em PE (21ª de 27 UFs) — perto do fim.
-- **PRODES**: Amazônia ~120k de ~835k features (~14%).
-- **MapBiomas/Earth Engine**: processando AC (2004–2005 feitos); todo o processo (27 UFs × 21 anos)
-  pode levar várias horas.
+- **Criar schema (4 tabelas) + scripts de seed + rotas** — concluído
+- **Ligar routers/tabelas novas e validar boot limpo do backend** — concluído (backend sobe limpo,
+  `/health` e `/` respondem 200)
+- **Escrever e rodar testes unitários (16 novos) + corrigir bug de colisão app/app** — concluído.
+  `tests/test_backend_api_routes.py` tinha 2 bugs reais que impediam até a coleta dos testes: (1)
+  todas as funções `def test_*` usavam `await` sem serem `async def`; (2) a fixture criava
+  `httpx.AsyncClient(app=app, ...)`, parâmetro removido no httpx 0.28 (precisa de
+  `transport=httpx.ASGITransport(app=app)`). Corrigido; suíte completa agora: **147/147 passando**
+  (era 138 antes desta correção).
+- **Criar utilitário de reconserto de município NULL no PRODES** — concluído
+  (`scripts/reresolve_prodes_municipios.py`, já existia pronto).
+- **Malha municipal (IBGE)** — **concluída**: 5.570 municípios, 27/27 UFs, 0 erros
+  (`seed_municipios.log`, 2026-07-26 10:40).
+- **Rodar `reresolve_prodes_municipios.py`** — concluído nesta sessão: 768.596 de 768.829 registros
+  pendentes ganharam município (768.596/768.829 ≈ 99,97%). Os ~233 restantes provavelmente têm
+  centroide fora de qualquer polígono da malha (litoral/fronteira) — não é um bug, é o
+  comportamento esperado de "nunca fabricar dado". **Atenção**: rodar esse script enquanto
+  `seed_prodes.py` está inserindo ativamente causou 12 erros transitórios de "database is locked"
+  (perda de 12 features de ~1,86M linhas, negligenciável) — evitar rodar os dois ao mesmo tempo em
+  execuções futuras, ou aceitar essa perda mínima.
+- **PRODES** — em progresso, retomado do checkpoint após interrupção (sessão anterior parou às
+  13:14, sem erro — provavelmente o terminal/processo foi encerrado externamente). Amazônia e
+  Pantanal confirmados concluídos; Cerrado em andamento (checkpoint em `scripts/.checkpoints/
+  prodes.json`). Faltam Caatinga, Mata Atlântica e Pampa.
+- **MapBiomas via Earth Engine** — **pausado por decisão do usuário** (2026-07-26 17:4x). Progresso
+  parcial real preservado: AC–GO/2010 (~193k linhas em `mapbiomas_municipio_stats`, checkpoint em
+  `scripts/.checkpoints/mapbiomas.json`). O arquivo JSON da conta de serviço usado na sessão
+  anterior não foi localizado nesta retomada (não está em `.env`, AppData ou no repo) — ficará
+  bloqueado até o usuário fornecer o caminho da credencial ou decidir usar `--from-excel`
+  (estatísticas oficiais baixadas manualmente de brasil.mapbiomas.org/estatisticas/) como
+  alternativa sem Earth Engine.
+- **ANA hidroclimática** — bloqueado (aguardando credencial pedida por e-mail a
+  `hidro@ana.gov.br`) — ação do operador, não de código.
+- **Validar PRODES e IBGE ao vivo (pilotos reais)** — parcialmente feito (ingestão real rodando
+  há horas com dados reais); falta uma validação funcional das rotas `/api/prodes/municipio/{codigo}`
+  e `/api/ibge/municipios/{codigo}/malha` contra o app rodando de ponta a ponta.
+- **Agendar/verificar health-check periódico para os jobs long-running** — em andamento (ver
+  próximos passos).
 
 ### Próximos passos sugeridos
 
-- Aguardar conclusão dos jobs de ingestão e re-checar logs (health-check agendado a cada 30min).
-- Quando a malha municipal terminar, rodar `scripts/reresolve_prodes_municipios.py` para consertar
-  municípios NULL do PRODES e reprocessar UFs que faltarem no MapBiomas.
-- Depois que os dados nacionais estiverem íntegros, proceder com a criação das rotas e testes
-  unitários (priorizar `backend/app/db/` e `tests/test_backend_db_national.py`).
-
-> Agendado: health-check periódico cada 30 minutos para verificar progresso e erros.
+- Aguardar PRODES terminar Cerrado/Caatinga/Mata Atlântica/Pampa (checkpoint permite retomar a
+  qualquer momento se interrompido de novo).
+- Rodar `scripts/reresolve_prodes_municipios.py` de novo só depois que o PRODES terminar
+  totalmente (evita a contenção de lock observada acima).
+- MapBiomas: retomar só quando o usuário disponibilizar a credencial do Earth Engine (ou optar por
+  `--from-excel`).
+- Validar manualmente as rotas novas (`/api/prodes/...`, `/api/ibge/...`, `/api/mapbiomas/...`,
+  `/api/ana/...`) contra o backend rodando, com um token real.
+- Fase 4 (deploy) segue pendente de decisão de infraestrutura do usuário — ver seção abaixo.
 
 ### Fase 4 — Deploy
 

@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
 if str(BACKEND_DIR) not in sys.path:
@@ -36,7 +36,8 @@ async def test_client(tmp_path, monkeypatch):
 
     init_db()
 
-    async with AsyncClient(app=app, base_url="http://testserver", follow_redirects=True) as client:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver", follow_redirects=True) as client:
         yield client
 
 
@@ -53,14 +54,14 @@ async def _register_user(client: AsyncClient) -> str:
 
 
 @pytest.mark.anyio
-def test_health_route(test_client: AsyncClient):
+async def test_health_route(test_client: AsyncClient):
     response = await test_client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
 @pytest.mark.anyio
-def test_ibge_ufs_route(monkeypatch, test_client: AsyncClient):
+async def test_ibge_ufs_route(monkeypatch, test_client: AsyncClient):
     import app.api.routes.ibge as ibge_routes
 
     class FakeResponse:
@@ -84,7 +85,7 @@ def test_ibge_ufs_route(monkeypatch, test_client: AsyncClient):
 
 
 @pytest.mark.anyio
-def test_ibge_malha_route_uses_cache(test_client: AsyncClient):
+async def test_ibge_malha_route_uses_cache(test_client: AsyncClient):
     import app.db.municipios as municipios_db
 
     municipios_db.save_municipio_malha("4205407", "Florianópolis", "SC", _sample_geojson())
@@ -97,16 +98,16 @@ def test_ibge_malha_route_uses_cache(test_client: AsyncClient):
 
 
 @pytest.mark.anyio
-def test_prodes_route_requires_auth(test_client: AsyncClient):
+async def test_prodes_route_requires_auth(test_client: AsyncClient):
     response = await test_client.get("/api/prodes/municipio/4205407")
     assert response.status_code == 401
 
 
 @pytest.mark.anyio
-def test_prodes_route_returns_data_with_valid_token(monkeypatch, test_client: AsyncClient):
+async def test_prodes_route_returns_data_with_valid_token(monkeypatch, test_client: AsyncClient):
     import app.api.routes.prodes as prodes_routes
 
-    token = _register_user(test_client)
+    token = await _register_user(test_client)
 
     monkeypatch.setattr(
         prodes_routes.prodes_db,
@@ -114,7 +115,7 @@ def test_prodes_route_returns_data_with_valid_token(monkeypatch, test_client: As
         lambda codigo: [{"bioma": "cerrado", "ano_deteccao": 2020, "area_km2": 1.5}],
     )
 
-    response = test_client.get(
+    response = await test_client.get(
         "/api/prodes/municipio/4205407",
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -126,16 +127,16 @@ def test_prodes_route_returns_data_with_valid_token(monkeypatch, test_client: As
 
 
 @pytest.mark.anyio
-def test_mapbiomas_route_requires_auth(test_client: AsyncClient):
+async def test_mapbiomas_route_requires_auth(test_client: AsyncClient):
     response = await test_client.get("/api/mapbiomas/serie/4205407")
     assert response.status_code == 401
 
 
 @pytest.mark.anyio
-def test_mapbiomas_route_returns_data_with_valid_token(monkeypatch, test_client: AsyncClient):
+async def test_mapbiomas_route_returns_data_with_valid_token(monkeypatch, test_client: AsyncClient):
     import app.api.routes.mapbiomas_stats as mapbiomas_routes
 
-    token = _register_user(test_client)
+    token = await _register_user(test_client)
 
     monkeypatch.setattr(
         mapbiomas_routes.mapbiomas_stats_db,
@@ -150,7 +151,7 @@ def test_mapbiomas_route_returns_data_with_valid_token(monkeypatch, test_client:
         ],
     )
 
-    response = test_client.get(
+    response = await test_client.get(
         "/api/mapbiomas/serie/4205407",
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -165,16 +166,16 @@ def test_mapbiomas_route_returns_data_with_valid_token(monkeypatch, test_client:
 
 
 @pytest.mark.anyio
-def test_ana_route_requires_auth(test_client: AsyncClient):
+async def test_ana_route_requires_auth(test_client: AsyncClient):
     response = await test_client.get("/api/ana/estacoes", params={"municipio_codigo": "4205407"})
     assert response.status_code == 401
 
 
 @pytest.mark.anyio
-def test_ana_routes_return_data_with_valid_token(monkeypatch, test_client: AsyncClient):
+async def test_ana_routes_return_data_with_valid_token(monkeypatch, test_client: AsyncClient):
     import app.api.routes.ana_hidroclimatica as ana_routes
 
-    token = _register_user(test_client)
+    token = await _register_user(test_client)
 
     monkeypatch.setattr(
         ana_routes.ana_db,
@@ -189,7 +190,7 @@ def test_ana_routes_return_data_with_valid_token(monkeypatch, test_client: Async
         ],
     )
 
-    response = test_client.get(
+    response = await test_client.get(
         "/api/ana/estacoes",
         params={"municipio_codigo": "4205407"},
         headers={"Authorization": f"Bearer {token}"},
@@ -205,7 +206,7 @@ def test_ana_routes_return_data_with_valid_token(monkeypatch, test_client: Async
         }
     ]
 
-    response = test_client.get(
+    response = await test_client.get(
         "/api/ana/serie/87382000",
         headers={"Authorization": f"Bearer {token}"},
     )
