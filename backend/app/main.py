@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT_DIR = Path(__file__).resolve().parents[1]  # backend/ — para `import app.api.routes...`
@@ -63,6 +64,18 @@ app.include_router(user_routes.router)
 app.include_router(supervised_routes.router)
 
 static_dir = os.path.join(PROJECT_ROOT, "static")
+
+# A raiz do site é a landing page (marketing/explicação, sem exigir login) —
+# StaticFiles(html=True) serviria index.html (a ferramenta) por padrão em
+# "/", pulando a landing inteiramente, então uma rota explícita para "/"
+# precisa vir ANTES do mount abaixo para ter prioridade. "Explorar o
+# sistema"/"Abrir a plataforma" na landing levam para /index.html, que aí
+# sim pede login para calcular métricas e usar o resto da ferramenta.
+@app.get("/", include_in_schema=False)
+def serve_landing_page():
+    return FileResponse(os.path.join(static_dir, "landing.html"))
+
+
 if os.path.exists(static_dir):
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 

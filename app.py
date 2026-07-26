@@ -110,6 +110,30 @@ from pathlib import Path
 import auth
 import db
 import clustering
+from landscape_core import (
+    ALLOWED_EXTENSIONS,
+    ALLOWED_TIF_EXTENSIONS,
+    LANDSCAPE_METRICS_INFO,
+    MAPBIOMAS_LEGEND_KEYS,
+    MAX_FILE_SIZE,
+    MAX_TIF_SIZE,
+    METRICS_INFO,
+    SLOW_METRIC_NAME,
+    WHOLE_RASTER_MAX_PIXELS,
+    _array_to_geotiff_bytes,
+    _clip_raster_at_path,
+    _compute_class_metrics,
+    _compute_fingerprint,
+    _compute_landscape_metrics,
+    _crop_and_mask_array,
+    _extract_year_from_filename,
+    _ibge_get_municipio_geojson,
+    _municipio_geometry_shapely,
+    _save_uploaded_tif_to_temp,
+    _utm_epsg_for_lonlat,
+    extract_landscape_from_tif,
+    validate_file_upload,
+)
 
 
 # Correção de ambiente (Windows): se houver uma variável de ambiente PROJ_LIB
@@ -134,120 +158,15 @@ logger = logging.getLogger(__name__)
 collections.Callable = collections.abc.Callable
 
 # Configurações de segurança
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-ALLOWED_EXTENSIONS = {'.geojson', '.zip'}  # .zip = shapefile compactado (.shp+.shx+.dbf+.prj)
-MAX_TIF_SIZE = 5 * 1024 * 1024 * 1024  # 5GB (server.maxUploadSize em .streamlit/config.toml precisa bater com isso)
-ALLOWED_TIF_EXTENSIONS = {'.tif', '.tiff'}
+# MAX_FILE_SIZE/ALLOWED_EXTENSIONS/MAX_TIF_SIZE/ALLOWED_TIF_EXTENSIONS,
+# METRICS_INFO/LANDSCAPE_METRICS_INFO/SLOW_METRIC_NAME, MAPBIOMAS_LEGEND_KEYS
+# e validate_file_upload agora vivem em landscape_core.py (import no topo
+# deste arquivo) — extraídos para um módulo sem dependência do Streamlit,
+# reaproveitado também pelo backend FastAPI.
 MAX_MUNICIPIOS_SHP_SIZE = 50 * 1024 * 1024  # 50MB — malha municipal de uma UF inteira pode passar dos 10MB do MAX_FILE_SIZE padrão
 MIN_BUFFER = 1000
 MAX_BUFFER = 10000
 
-# Nome interno (usado em pls.Landscape.compute_class_metrics_df), ícone e
-# tradução de cada métrica — fonte única usada tanto na revelação
-# progressiva durante o cálculo quanto no expander "Detalhamento das
-# métricas" no rodapé, para não duplicar a lista em dois lugares.
-#
-# ORDEM DELIBERADA (2026-07-07, medida por benchmark — ver
-# `_compute_class_metrics`/`SLOW_METRIC_NAME`): métricas sem dependência de
-# outros patches vêm primeiro (quase instantâneas, ~0-0,4s cada — a
-# primeira chamada aquece o cache interno de geometria de patch que as
-# demais reaproveitam), seguidas pelas métricas de área central (custo
-# próprio moderado, ~0,5-0,7s cada — exigem erosão de borda além da
-# geometria básica), e por último a métrica que depende da posição de
-# TODOS os patches da classe entre si (euclidean_nearest_neighbor_mn,
-# ~12,5s num raster de teste 3000×3000 — ~97% do tempo total). Isso faz o
-# usuário ver a maioria das métricas quase instantaneamente, em vez de
-# esperar a mais lenta no meio da lista antes de ver as rápidas que vinham
-# depois dela.
-METRICS_INFO = [
-    # --- Área, Densidade e Forma (sem dependência entre patches) ---
-    ('total_area', '📐', 'Área Total (ha)'),
-    ('proportion_of_landscape', '📊', 'Proporção da paisagem (%)'),
-    ('number_of_patches', '🧩', 'Número de Manchas'),
-    ('patch_density', '📌', 'Densidade de manchas (manchas/100ha)'),
-    ('largest_patch_index', '🏆', 'Índice de maior mancha'),
-    ('total_edge', '📏', 'Total de Bordas (m)'),
-    ('edge_density', '📏', 'Densidade de borda (m/ha)'),
-    ('landscape_shape_index', '🔷', 'Índice de forma da paisagem'),
-    ('area_mn', '📐', 'Área média (ha)'),
-    ('perimeter_mn', '📏', 'Perímetro médio (m)'),
-    ('perimeter_area_ratio_mn', '⚖️', 'Razão de perímetro/área média'),
-    ('shape_index_mn', '🔷', 'Média de índice de forma'),
-    ('fractal_dimension_mn', '🌀', 'Dimensão fractal média'),
-    # --- Área Central (Core Area) — custo próprio moderado (erosão de
-    # borda; ver `edge_depth` em pls.Landscape, padrão 0) ---
-    ('total_core_area', '🌳', 'Área central total (ha)'),
-    ('core_area_proportion_of_landscape', '🌳', 'Proporção de área central na paisagem (%)'),
-    ('core_area_mn', '🌳', 'Área central média por mancha (ha)'),
-    ('core_area_index_mn', '🌳', 'Índice médio de área central (%)'),
-    ('number_of_disjunct_core_areas', '🌳', 'Número de áreas centrais disjuntas'),
-    ('disjunct_core_area_mn', '🌳', 'Área central disjunta média (ha)'),
-    # --- Isolamento (depende da posição de todos os patches entre si —
-    # a métrica mais cara de longe, sempre por último) ---
-    # EM STANDBY (2026-07-07): desativada temporariamente a pedido do usuário
-    # para validar o restante do pipeline (cache, painel de histórico) sem
-    # esperar pela métrica mais lenta a cada rodada — ver SLOW_METRIC_NAME.
-    # Reativar removendo o comentário da linha abaixo.
-    # ('euclidean_nearest_neighbor_mn', '📍', 'Distância média ao vizinho mais próximo (m)'),
-]
-
-# Métricas de nível de PAISAGEM (um único valor global, não por classe) —
-# complementam METRICS_INFO (nível de classe) com diversidade e agregação.
-# `shannon_diversity_index`/`contagion`/`effective_mesh_size`/`patch_density`/
-# `edge_density`/`landscape_shape_index` vêm do PyLandStats
-# (`compute_landscape_metrics_df`); `shannon_evenness_index`/
-# `simpson_diversity_index`/`simpson_evenness_index`/`patch_richness` são
-# calculadas manualmente em `_compute_landscape_metrics` — fórmulas padrão
-# do FRAGSTATS, sem método dedicado equivalente no PyLandStats 3.1.0 usado
-# neste projeto.
-#
-# Fora do escopo por ora (ver ROADMAP.md): Aggregation Index (AI),
-# Clumpiness Index (CLUMPY), Landscape Division Index (DIVISION), Splitting
-# Index (SPLIT) — não implementados no PyLandStats instalado (sem método
-# equivalente). Interspersion & Juxtaposition Index (IJI), Proximity Index
-# e Contiguity Index existem como métodos em `pls.Landscape` mas levantam
-# `NotImplementedError` nesta versão (3.1.0) — confirmado testando
-# diretamente antes de expor qualquer um deles na interface. Métricas de
-# Contraste (ex.: TECI) exigiriam uma matriz de similaridade entre classes
-# fornecida pelo usuário, não suportado pela UI atual.
-LANDSCAPE_METRICS_INFO = [
-    ('shannon_diversity_index', '🌈', 'SHDI', 'Índice de Diversidade de Shannon'),
-    ('shannon_evenness_index', '⚖️', 'SHEI', 'Uniformidade de Shannon'),
-    ('simpson_diversity_index', '🎲', 'SIDI', 'Índice de Diversidade de Simpson'),
-    ('simpson_evenness_index', '⚖️', 'SIEI', 'Uniformidade de Simpson'),
-    ('patch_richness', '🔢', 'PR', 'Riqueza de Manchas (nº de classes presentes)'),
-    ('contagion', '🧲', 'CONTAG', 'Contágio (%)'),
-    ('effective_mesh_size', '🕸️', 'MESH', 'Tamanho Efetivo de Malha (ha)'),
-    ('patch_density', '📌', 'PD', 'Densidade de Manchas (manchas/100ha)'),
-    ('edge_density', '📏', 'ED', 'Densidade de Borda (m/ha)'),
-    ('landscape_shape_index', '🔷', 'LSI', 'Índice de Forma da Paisagem'),
-]
-
-def validate_file_upload(uploaded_file, allowed_extensions=None, max_size=None):
-    """Valida o arquivo enviado pelo usuário"""
-    allowed_extensions = allowed_extensions or ALLOWED_EXTENSIONS
-    max_size = max_size or MAX_FILE_SIZE
-
-    if not uploaded_file:
-        return False, "Nenhum arquivo enviado"
-
-    # Verifica tamanho do arquivo
-    if uploaded_file.size > max_size:
-        return False, f"Arquivo muito grande. Máximo: {max_size // (1024*1024)}MB"
-
-    # Verifica extensão
-    file_extension = Path(uploaded_file.name).suffix.lower()
-    if file_extension not in allowed_extensions:
-        return False, f"Extensão não permitida. Permitido: {allowed_extensions}"
-    
-    # Bloqueia path traversal (".." + separadores) e caracteres inválidos em
-    # nomes de arquivo do Windows; o nome original do upload nunca é usado
-    # como caminho de disco (uploaded_file_to_gdf gera um nome via uuid4),
-    # mas a validação fica como defesa em profundidade caso isso mude.
-    if any(char in uploaded_file.name for char in ['..', '/', '\\', '<', '>', '|', '*', '?']):
-        return False, "Nome do arquivo contém caracteres não permitidos"
-
-    return True, "Arquivo válido"
 
 def initialize_ee(credentials: dict) -> bool:
     """
@@ -522,35 +441,6 @@ def _ibge_get_municipios(uf_sigla: str) -> list[dict]:
 
 
 @st.cache_data(ttl=24 * 3600)
-def _ibge_get_municipio_geojson(codigo: str) -> dict | None:
-    """Busca o polígono (GeoJSON, EPSG:4326) do limite do município na malha
-    territorial do IBGE — usado como área de interesse alternativa ao
-    ponto+buffer. `qualidade=minima` mantém o payload pequeno (suficiente
-    para recorte de raster/consulta ao Earth Engine, não para cartografia de
-    precisão).
-
-    Segue a mesma regra do resto do app: se a API falhar, retorna `None` em
-    vez de inventar uma geometria — o chamador interrompe o fluxo com uma
-    mensagem explicando a causa, nunca segue adiante com um limite
-    fabricado."""
-    try:
-        resp = requests.get(
-            f"{IBGE_MALHAS_BASE}/municipios/{codigo}",
-            params={"formato": "application/vnd.geo+json", "qualidade": "minima"},
-            timeout=IBGE_REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-        geojson = resp.json()
-    except (requests.RequestException, ValueError) as ibge_error:
-        logger.warning(f"Falha ao buscar malha municipal do IBGE (código {codigo}): {ibge_error}")
-        return None
-
-    if not geojson.get("features"):
-        return None
-    return geojson
-
-
-@st.cache_data(ttl=24 * 3600)
 def _ibge_get_populacao_estimada(codigo: str) -> int | None:
     """Melhor esforço: população estimada mais recente (agregado SIDRA 6579,
     variável 9324) para o município — enriquecimento opcional da matriz
@@ -571,16 +461,6 @@ def _ibge_get_populacao_estimada(codigo: str) -> int | None:
     except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as pop_error:
         logger.warning(f"Falha ao buscar população estimada do IBGE (código {codigo}): {pop_error}")
         return None
-
-
-def _municipio_geometry_shapely(municipio_geojson: dict):
-    """Extrai a geometria (Shapely, EPSG:4326) da(s) feature(s) retornada(s)
-    pela malha do IBGE — normalmente uma única feature por município, mas
-    combina via `unary_union` se vier mais de uma (defensivo)."""
-    from shapely.ops import unary_union
-
-    geoms = [shape(feat["geometry"]) for feat in municipio_geojson["features"]]
-    return geoms[0] if len(geoms) == 1 else unary_union(geoms)
 
 
 # Nomes de coluna mais comuns nas malhas municipais do IBGE (varia entre
@@ -616,368 +496,6 @@ def _detect_municipio_columns(gdf) -> dict:
         "nome": _find(MUNICIPIO_NAME_COL_CANDIDATES),
         "uf": _find(MUNICIPIO_UF_COL_CANDIDATES),
     }
-
-
-WHOLE_RASTER_MAX_PIXELS = 50_000_000  # acima disso, reamostra por moda antes de reprojetar (cabe na memória do processo)
-
-
-def _utm_epsg_for_lonlat(lon: float, lat: float) -> int:
-    """EPSG da zona UTM (WGS84) que contém o ponto — usado para reprojetar
-    automaticamente um GeoTIFF geográfico quando há um ponto de interesse
-    (recorte pequeno ao redor de um ponto, então uma única zona UTM é
-    localmente precisa)."""
-    zone = int((lon + 180) / 6) % 60 + 1
-    return (32600 if lat >= 0 else 32700) + zone
-
-
-def _array_to_geotiff_bytes(array, transform, crs, nodata) -> bytes:
-    """Serializa um array 2D (uint8) + transform/crs/nodata como bytes de um
-    GeoTIFF de 1 banda — usado para oferecer o download do raster que
-    efetivamente alimentou o cálculo (após reprojeção automática, se houve)."""
-    profile = {
-        "driver": "GTiff",
-        "height": array.shape[0],
-        "width": array.shape[1],
-        "count": 1,
-        "dtype": "uint8",
-        "crs": crs,
-        "transform": transform,
-        "nodata": nodata,
-        "compress": "lzw",
-    }
-    with MemoryFile() as memfile:
-        with memfile.open(**profile) as dataset:
-            dataset.write(array.astype("uint8"), 1)
-        return bytes(memfile.read())
-
-
-def _crop_and_mask_array(array, transform, geometry, nodata):
-    """Recorta `array` para a bounding box de `geometry` e aplica `nodata`
-    fora dela — equivalente a `rasterio.mask.mask(..., crop=True)`, mas
-    operando direto sobre um array já em memória (sem precisar reabrir um
-    dataset), usado depois da reprojeção automática de um GeoTIFF
-    geográfico."""
-    mask = geometry_mask([mapping(geometry)], out_shape=array.shape, transform=transform, invert=True)
-    if not mask.any():
-        raise ValueError("A área do buffer não intersecta o raster enviado.")
-
-    rows = np.where(mask.any(axis=1))[0]
-    cols = np.where(mask.any(axis=0))[0]
-    rmin, rmax = rows[0], rows[-1]
-    cmin, cmax = cols[0], cols[-1]
-
-    cropped = array[rmin:rmax + 1, cmin:cmax + 1].copy()
-    cropped_mask = mask[rmin:rmax + 1, cmin:cmax + 1]
-    cropped[~cropped_mask] = nodata
-    new_transform = transform * Affine.translation(cmin, rmin)
-    return cropped, new_transform
-
-
-def _save_uploaded_tif_to_temp(uploaded_tif, on_progress=None, temp_path_out=None):
-    """Valida e salva o GeoTIFF enviado num arquivo temporário seguro,
-    escrevendo em blocos (em vez de um único write) para poder reportar
-    progresso real, proporcional aos bytes ja gravados - relevante para
-    arquivos de até 5GB (MAX_TIF_SIZE). Extraído de
-    extract_landscape_from_tif para que o modo de lote por município
-    (_run_municipio_batch) salve o arquivo em disco uma única vez e reuse o
-    mesmo caminho em _clip_raster_at_path para cada município, em vez de
-    reescrever os mesmos bytes a cada recorte.
-
-    Retorna o caminho do arquivo salvo. Se temp_path_out for informado, o
-    caminho também é anexado a essa lista (mesmo propósito de
-    extract_landscape_from_tif: permitir que o chamador adie a limpeza)."""
-    def _report(fraction, label):
-        if on_progress:
-            on_progress(fraction, label)
-
-    is_valid, message = validate_file_upload(uploaded_tif, ALLOWED_TIF_EXTENSIONS, MAX_TIF_SIZE)
-    if not is_valid:
-        raise ValueError(f"Arquivo inválido: {message}")
-
-    file_extension = Path(uploaded_tif.name).suffix.lower()
-    safe_filename = f"{uuid.uuid4()}{file_extension}"
-    file_path = os.path.join(tempfile.gettempdir(), safe_filename)
-
-    temp_dir = Path(tempfile.gettempdir()).resolve()
-    file_path_resolved = Path(file_path).resolve()
-    if not str(file_path_resolved).startswith(str(temp_dir)):
-        raise ValueError("Caminho de arquivo inseguro")
-
-    if temp_path_out is not None:
-        temp_path_out.append(file_path)
-
-    _report(0.0, "Salvando arquivo enviado...")
-    raw_buffer = uploaded_tif.getbuffer()
-    total_bytes = len(raw_buffer) or 1
-    chunk_size = 8 * 1024 * 1024  # 8MB
-    with open(file_path, "wb") as f:
-        for offset in range(0, total_bytes, chunk_size):
-            f.write(raw_buffer[offset:offset + chunk_size])
-            written = min(offset + chunk_size, total_bytes)
-            _report(0.5 * written / total_bytes, "Salvando arquivo enviado...")
-
-    return file_path
-
-
-def extract_landscape_from_tif(
-    uploaded_tif, point_lonlat=None, buffer_dist=None, on_progress=None,
-    cleanup=True, temp_path_out=None, region_geojson=None,
-):
-    """
-    Extrai as classes de cobertura do solo do GeoTIFF enviado pelo usuário —
-    alternativa a extrair os mesmos dados via MapBiomas/Earth Engine (ver
-    seção "Fonte dos dados" em app.py). Três modos, conforme os argumentos:
-
-    - `point_lonlat` e `buffer_dist` informados: recorta apenas a área do
-      buffer (ponto + raio em metros) ao redor do ponto de interesse.
-    - `region_geojson` informado (GeoJSON EPSG:4326, ver
-      `_ibge_get_municipio_geojson`): recorta pela geometria exata (ex.:
-      limite municipal), em vez de um buffer circular. Mutuamente exclusivo
-      com `point_lonlat`/`buffer_dist` — o chamador escolhe um dos dois.
-    - Nenhum dos dois informado: lê o raster inteiro, sem recorte — usado
-      quando o usuário sobe só o GeoTIFF, sem enviar um ponto/município de
-      interesse.
-
-    Se o GeoTIFF estiver em CRS geográfico (graus), é reprojetado
-    automaticamente antes da extração — nunca exige que o usuário reprojete
-    manualmente fora do app:
-    - Com ponto de interesse: recorta uma janela (com margem) ao redor do
-      ponto ainda em graus (bem mais barato que reprojetar o raster inteiro)
-      e reprojeta só essa janela para a zona UTM que contém o ponto.
-    - Sem ponto (modo raster inteiro): reprojeta para SIRGAS 2000/Brazil
-      Polyconic (EPSG:5880) — projeção pensada para minimizar distorção de
-      área na extensão inteira do Brasil, mais adequada que uma única zona
-      UTM para uma área potencialmente continental. Se o raster tiver mais
-      de `WHOLE_RASTER_MAX_PIXELS`, é reamostrado por moda (nunca
-      interpolado — dado é categórico) antes da reprojeção, para caber na
-      memória do processo.
-
-    Retorna `(array, resolution, reprojected_tif_bytes)` — o terceiro item é
-    `None` se o raster já estava projetado (nada foi convertido) ou os bytes
-    do GeoTIFF final (já recortado/reprojetado) para oferecer download ao
-    usuário, caso tenha havido conversão automática.
-
-    Por padrão (`cleanup=True`), o arquivo temporário em disco é sempre
-    removido no `finally`, com sucesso ou falha — nunca fica retido além da
-    própria chamada. No modo de múltiplos arquivos, o chamador passa
-    `cleanup=False` para adiar a remoção até que TODOS os arquivos do lote
-    tenham suas métricas calculadas (não só a extração) — nesse caso, o
-    caminho do arquivo temporário é anexado à lista `temp_path_out` (se
-    informada) para que o chamador possa limpá-lo depois.
-    """
-    file_path = _save_uploaded_tif_to_temp(uploaded_tif, on_progress=on_progress, temp_path_out=temp_path_out)
-    try:
-        return _clip_raster_at_path(
-            file_path, point_lonlat=point_lonlat, buffer_dist=buffer_dist,
-            region_geojson=region_geojson, on_progress=on_progress,
-        )
-    finally:
-        if cleanup and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                if on_progress:
-                    on_progress(1.0, "Arquivo temporário descartado")
-            except Exception as cleanup_error:
-                logger.warning(f"Erro ao limpar arquivo temporário: {cleanup_error}")
-
-
-def _clip_raster_at_path(
-    file_path, point_lonlat=None, buffer_dist=None, region_geojson=None,
-    on_progress=None, want_reprojected_bytes=True,
-):
-    """Abre o GeoTIFF já salvo em `file_path` e extrai as classes de
-    cobertura do solo — núcleo de `extract_landscape_from_tif`, extraído
-    para poder ser chamado repetidamente sobre o MESMO arquivo em disco sem
-    reescrevê-lo a cada vez (usado por `_run_municipio_batch`, que recorta o
-    mesmo raster uma vez por município do shapefile enviado). Aceita os
-    mesmos `point_lonlat`/`buffer_dist`/`region_geojson` de
-    `extract_landscape_from_tif` (ver docstring lá para os três modos e a
-    reprojeção automática de CRS geográfico) e retorna o mesmo formato
-    `(array, resolution, reprojected_tif_bytes)` — exceto que
-    `reprojected_tif_bytes` fica sempre `None` se `want_reprojected_bytes`
-    for `False` (o lote por município recorta o mesmo raster centenas de
-    vezes; gerar um GeoTIFF de download a cada recorte seria desperdício de
-    tempo/memória sem uso real)."""
-    def _report(fraction, label):
-        if on_progress:
-            on_progress(fraction, label)
-
-    has_point_region = point_lonlat is not None and buffer_dist is not None
-    has_municipio_region = region_geojson is not None
-    municipio_geom_wgs84 = _municipio_geometry_shapely(region_geojson) if has_municipio_region else None
-
-    _report(0.55, "Abrindo raster e validando projeção...")
-    reprojected = False
-    with rasterio.open(file_path) as src:
-        if src.crs is None:
-            raise ValueError("O GeoTIFF não tem CRS (sistema de referência) definido.")
-
-        src_nodata = src.nodata if src.nodata is not None else 0
-
-        if src.crs.is_geographic:
-            reprojected = True
-
-            if has_point_region:
-                # Recorta uma janela generosa ao redor do ponto AINDA em
-                # graus — bem mais barato que reprojetar o raster
-                # inteiro para só depois recortar um pedaço pequeno.
-                _report(0.60, "CRS geográfico detectado — recortando janela ao redor do ponto...")
-                lon, lat = point_lonlat
-                margin_m = buffer_dist * 3 + 1000  # margem de segurança p/ a reprojeção não faltar pixel na borda
-                lat_margin_deg = margin_m / 111_320
-                lon_margin_deg = margin_m / (111_320 * max(np.cos(np.radians(lat)), 0.1))
-                window = from_bounds(
-                    lon - lon_margin_deg, lat - lat_margin_deg,
-                    lon + lon_margin_deg, lat + lat_margin_deg,
-                    transform=src.transform,
-                ).round_lengths().round_offsets()
-                window = window.intersection(Window(0, 0, src.width, src.height))
-                if window.width <= 0 or window.height <= 0:
-                    raise ValueError("O ponto selecionado está fora da extensão do raster enviado.")
-
-                src_array = src.read(1, window=window)
-                src_transform = window_transform(window, src.transform)
-                dst_crs = f"EPSG:{_utm_epsg_for_lonlat(lon, lat)}"
-            elif has_municipio_region:
-                # Mesma ideia do ponto: recorta uma janela (bbox do
-                # município + margem) AINDA em graus antes de reprojetar,
-                # em vez de reprojetar o raster inteiro. A zona UTM usada
-                # é a do centróide do município — aproximação aceitável
-                # mesmo para municípios que cruzem duas zonas (o próprio
-                # modo ponto já faz a mesma simplificação para buffers
-                # grandes).
-                _report(0.60, "CRS geográfico detectado — recortando janela ao redor do município...")
-                min_lon, min_lat, max_lon, max_lat = municipio_geom_wgs84.bounds
-                margin_deg = 0.02  # ~2km de margem de segurança para a reprojeção não faltar pixel na borda
-                window = from_bounds(
-                    min_lon - margin_deg, min_lat - margin_deg,
-                    max_lon + margin_deg, max_lat + margin_deg,
-                    transform=src.transform,
-                ).round_lengths().round_offsets()
-                window = window.intersection(Window(0, 0, src.width, src.height))
-                if window.width <= 0 or window.height <= 0:
-                    raise ValueError("O município selecionado está fora da extensão do raster enviado.")
-
-                src_array = src.read(1, window=window)
-                src_transform = window_transform(window, src.transform)
-                centroid = municipio_geom_wgs84.centroid
-                dst_crs = f"EPSG:{_utm_epsg_for_lonlat(centroid.x, centroid.y)}"
-            else:
-                # Modo raster inteiro: reamostra por moda antes de
-                # reprojetar se for grande demais para caber na memória
-                # do processo (dado categórico — nunca interpolado).
-                total_pixels = src.width * src.height
-                if total_pixels > WHOLE_RASTER_MAX_PIXELS:
-                    scale = int(np.ceil(np.sqrt(total_pixels / WHOLE_RASTER_MAX_PIXELS)))
-                    out_height = max(src.height // scale, 1)
-                    out_width = max(src.width // scale, 1)
-                    _report(
-                        0.60,
-                        f"CRS geográfico detectado — raster grande demais "
-                        f"({total_pixels:,} pixels), reamostrando por moda "
-                        f"(fator {scale}x) antes de reprojetar...",
-                    )
-                    src_array = src.read(1, out_shape=(out_height, out_width), resampling=Resampling.mode)
-                    src_transform = src.transform * src.transform.scale(
-                        src.width / out_width, src.height / out_height
-                    )
-                else:
-                    _report(0.60, "CRS geográfico detectado — preparando reprojeção do raster inteiro...")
-                    src_array = src.read(1)
-                    src_transform = src.transform
-                dst_crs = "EPSG:5880"
-
-            src_crs = src.crs
-            _report(0.70, f"Reprojetando para {dst_crs} (dado categórico — sem interpolação)...")
-            dst_transform, dst_width, dst_height = calculate_default_transform(
-                src_crs, dst_crs, src_array.shape[1], src_array.shape[0],
-                left=src_transform.c,
-                top=src_transform.f,
-                right=src_transform.c + src_array.shape[1] * src_transform.a,
-                bottom=src_transform.f + src_array.shape[0] * src_transform.e,
-            )
-            dst_array = np.zeros((dst_height, dst_width), dtype=np.uint8)
-            reproject(
-                source=src_array,
-                destination=dst_array,
-                src_transform=src_transform,
-                src_crs=src_crs,
-                dst_transform=dst_transform,
-                dst_crs=dst_crs,
-                resampling=Resampling.nearest,  # dado categórico — nunca interpolar valores de classe
-                src_nodata=src_nodata,
-                dst_nodata=0,
-            )
-
-            array = dst_array
-            out_transform = dst_transform
-            out_crs = dst_crs
-            nodata_value = 0
-            resolution = (abs(dst_transform.a), abs(dst_transform.e))
-
-            if has_point_region:
-                _report(0.85, "Recortando a área do buffer (pós-reprojeção)...")
-                transformer = Transformer.from_crs("EPSG:4326", dst_crs, always_xy=True)
-                x, y = transformer.transform(lon, lat)
-                buffer_geom = Point(x, y).buffer(buffer_dist)
-                array, out_transform = _crop_and_mask_array(array, out_transform, buffer_geom, nodata_value)
-            elif has_municipio_region:
-                _report(0.85, "Recortando o limite municipal (pós-reprojeção)...")
-                transformer = Transformer.from_crs("EPSG:4326", dst_crs, always_xy=True)
-                municipio_geom_dst = shapely_transform(transformer.transform, municipio_geom_wgs84)
-                array, out_transform = _crop_and_mask_array(array, out_transform, municipio_geom_dst, nodata_value)
-        else:
-            # Já em CRS projetado — comportamento original preservado.
-            nodata_value = src_nodata
-            out_crs = src.crs
-            resolution = (abs(src.res[0]), abs(src.res[1]))
-
-            if has_point_region:
-                transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-                x, y = transformer.transform(point_lonlat[0], point_lonlat[1])
-                buffer_geom = Point(x, y).buffer(buffer_dist)
-
-                _report(0.8, "Recortando a área do buffer...")
-                try:
-                    out_image, out_transform = rio_mask(src, [mapping(buffer_geom)], crop=True, nodata=nodata_value)
-                except ValueError as mask_error:
-                    raise ValueError("A área do buffer não intersecta o raster enviado.") from mask_error
-                array = out_image[0]
-            elif has_municipio_region:
-                transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-                municipio_geom_dst = shapely_transform(transformer.transform, municipio_geom_wgs84)
-
-                _report(0.8, "Recortando o limite municipal...")
-                try:
-                    out_image, out_transform = rio_mask(
-                        src, [mapping(municipio_geom_dst)], crop=True, nodata=nodata_value
-                    )
-                except ValueError as mask_error:
-                    raise ValueError("O limite municipal não intersecta o raster enviado.") from mask_error
-                array = out_image[0]
-            else:
-                _report(0.8, "Lendo o raster completo...")
-                array = src.read(1)
-                out_transform = src.transform
-
-    if array.size == 0 or np.all(array == nodata_value):
-        raise ValueError(
-            "Nenhum pixel válido encontrado no raster enviado "
-            + ("dentro da área do buffer. Aumente o buffer, escolha outro ponto, ou "
-               "confirme que o raster cobre essa área."
-               if has_point_region else
-               "dentro do limite municipal. Confirme que o raster cobre essa região."
-               if has_municipio_region else
-               "— o arquivo parece conter apenas valores nodata.")
-        )
-
-    reprojected_tif_bytes = None
-    if reprojected and want_reprojected_bytes:
-        _report(0.95, "Gerando arquivo reprojetado para download...")
-        reprojected_tif_bytes = _array_to_geotiff_bytes(array, out_transform, out_crs, nodata_value)
-
-    _report(0.98, "Extração concluída")
-    return array, resolution, reprojected_tif_bytes
 
 
 METRIC_CHART_COLOR = "#2a78d6"  # azul — paleta validada (skill de dataviz), série única por gráfico
@@ -1046,175 +564,6 @@ CATEGORICAL_PALETTE = [
     "#4a3aa7", "#e34948", "#e87ba4", "#eb6834",
 ]
 
-# Dicionário de legendas MapBiomas completo — ver limitação conhecida no
-# comentário original em _compute_class_metrics: mapeamento fixo por posição
-# de índice, construído a partir do esquema de classes da Collection
-# (aprox. 9); classes não usadas nesse esquema ficam como ' '. Extraído como
-# constante de módulo para ser reaproveitado tanto no caminho de uma única
-# fonte quanto no loop de múltiplos GeoTIFFs.
-MAPBIOMAS_LEGEND_KEYS = [
-    ' ',  # 0
-    'Floresta',  # 1
-    ' ',  # 2
-    'Formacao florestal',  # 3
-    'Savana',  # 4
-    'Mangue',  # 5
-    ' ', ' ', ' ',  # 6-8
-    'Silvicultura',  # 9
-    'Formação natural nao-florestal',  # 10
-    'Campo Alagado e Área Pantanosa',  # 11
-    'Campos',  # 12
-    'Outras formacoes nao-florestais',  # 13
-    'Agropecuaria',  # 14
-    'Pastagem',  # 15
-    ' ', ' ',  # 16-17
-    'Agricultura',  # 18
-    'Agricultura temporarias',  # 19
-    'Cana',  # 20
-    'Mosaico de Agricultura e Pastagem',  # 21
-    'Area nao Vegetada',  # 22
-    'Dunas',  # 23
-    'Area Urbanizada',  # 24
-    'Outras areas nao vegetadas',  # 25
-    'Agua',  # 26
-    'Nao Observado',  # 27
-    ' ',  # 28
-    'Afloramento rochoso',  # 29
-    'Mineracao',  # 30
-    'Aquicultura',  # 31
-    'Sal',  # 32
-    'Rio, lago e oceano',  # 33
-    ' ', ' ',  # 34-35
-    'Lavoura Perene',  # 36
-    ' ', ' ',  # 37-38
-    'Soja',  # 39
-    'Arroz',  # 40
-    'Outras culturas temporarias',  # 41
-    ' ', ' ', ' ', ' ',  # 42-45
-    'Cafe',  # 46
-    'Citrus',  # 47
-    'Outras lavouras perenes',  # 48
-    'Restinga arborea',  # 49
-]
-
-
-# Métrica isoladamente responsável por ~97% do tempo de cálculo em testes
-# (12,3s de 12,7s para um raster 3000x3000 com patches realistas — as outras
-# 11 métricas juntas levam ~0,4s): calcula distância entre TODAS as manchas
-# da mesma classe, custo que cresce rápido com o número de manchas. Usado
-# para avisar o usuário nesse ponto específico em vez de deixá-lo "parado"
-# numa % sem explicação.
-SLOW_METRIC_NAME = "euclidean_nearest_neighbor_mn"
-
-
-def _compute_class_metrics(np_arr_mb, resolution, notify=None, on_metric_progress=None):
-    """Instancia pls.Landscape e calcula a tabela de métricas por classe
-    (filtrada a >10% de proporção da paisagem, com nomes de classe do
-    MapBiomas) — etapa compartilhada entre a fonte MapBiomas/GEE e o(s)
-    GeoTIFF(s) próprio(s) enviado(s) pelo usuário. Levanta RuntimeError com
-    contexto se o array for inválido para o PyLandStats ou se o cálculo de
-    métricas falhar — nunca retorna uma métrica parcial/fabricada.
-
-    Calcula uma métrica por vez (em vez de todas numa única chamada) para
-    poder reportar progresso real via `on_metric_progress(i, total, label)`
-    antes de cada uma — medido empiricamente sem custo adicional relevante
-    (o PyLandStats reaproveita internamente os cálculos de patch já feitos
-    no mesmo objeto `Landscape` entre chamadas).
-
-    `notify`, se informado, recebe mensagens de progresso (ex.: `st.write`)
-    — opcional porque no loop de múltiplos arquivos essas mensagens por
-    arquivo poluiriam a tela; no caminho de arquivo único elas continuam
-    aparecendo em tempo real."""
-    def _notify(msg):
-        if notify:
-            notify(msg)
-
-    if np_arr_mb.shape[0] < 3 or np_arr_mb.shape[1] < 3:
-        _notify("⚠️ Área pequena, expandindo para análise...")
-        np_arr_mb = np.pad(np_arr_mb, ((1, 1), (1, 1)), mode='constant', constant_values=0)
-
-    try:
-        ls = pls.Landscape(np_arr_mb, res=resolution)
-    except Exception as pls_error:
-        logger.error(f"Erro no PyLandStats: {pls_error}")
-        raise RuntimeError(
-            f"Erro ao processar métricas da paisagem: {pls_error}. Forma do "
-            f"array: {np_arr_mb.shape}. Valores únicos: {np.unique(np_arr_mb)}"
-        ) from pls_error
-
-    try:
-        total_metrics = len(METRICS_INFO)
-        per_metric_dfs = []
-        for i, (metric_name, _icon, metric_label) in enumerate(METRICS_INFO):
-            if on_metric_progress:
-                on_metric_progress(i, total_metrics, metric_label)
-            if metric_name == SLOW_METRIC_NAME:
-                _notify(
-                    f"⏳ Calculando '{metric_label}' — mede a distância entre todas as "
-                    "manchas da mesma classe, então demora mais em áreas com muitas "
-                    "manchas pequenas. As outras métricas já estão prontas."
-                )
-            per_metric_dfs.append(ls.compute_class_metrics_df(metrics=[metric_name]))
-
-        class_metrics_df = pd.concat(per_metric_dfs, axis=1)
-        classes_index = list(map(int, class_metrics_df.index))
-        legend_dict = {i: name for i, name in enumerate(MAPBIOMAS_LEGEND_KEYS)}
-        class_metrics_df.index = [legend_dict.get(x, f'Classe {x}') for x in classes_index]
-
-        class_metrics_df_sub = class_metrics_df[class_metrics_df['proportion_of_landscape'] > 10]
-        class_metrics_df_sub = class_metrics_df_sub.sort_values(by=['total_area'], ascending=False)
-
-        if class_metrics_df_sub.empty:
-            _notify("⚠️ Nenhuma classe com proporção > 10% encontrada. Mostrando todas as classes.")
-            class_metrics_df_sub = class_metrics_df.sort_values(by=['total_area'], ascending=False)
-    except Exception as metrics_error:
-        logger.error(f"Erro ao calcular métricas: {metrics_error}")
-        raise RuntimeError(f"Erro ao calcular métricas da paisagem: {metrics_error}") from metrics_error
-
-    return ls, class_metrics_df_sub
-
-
-def _compute_landscape_metrics(ls) -> dict:
-    """Calcula métricas de nível de PAISAGEM (um único valor global, não
-    por classe) — diversidade e agregação da paisagem como um todo,
-    complementando as métricas por classe de `_compute_class_metrics`. Não
-    levanta exceção: se o PyLandStats falhar num valor específico (raro,
-    mas pode ocorrer com só 1 classe presente), essa entrada fica `None`
-    em vez de derrubar o cálculo inteiro (as métricas de classe já
-    calculadas continuam válidas mesmo assim)."""
-    try:
-        df = ls.compute_landscape_metrics_df(
-            metrics=[
-                'shannon_diversity_index', 'contagion', 'effective_mesh_size',
-                'patch_density', 'edge_density', 'landscape_shape_index',
-            ]
-        )
-        values = df.iloc[0].to_dict()
-    except Exception as landscape_error:
-        logger.warning(f"Erro ao calcular métricas de paisagem (PyLandStats): {landscape_error}")
-        values = {}
-
-    # SHEI/SIDI/SIEI/PR: sem método dedicado no PyLandStats 3.1.0 — fórmulas
-    # padrão do FRAGSTATS a partir das proporções de área por classe.
-    try:
-        proportions = ls.compute_class_metrics_df(
-            metrics=['proportion_of_landscape']
-        )['proportion_of_landscape'] / 100
-        richness = len(proportions)
-        values['patch_richness'] = richness
-
-        shdi = values.get('shannon_diversity_index')
-        values['shannon_evenness_index'] = shdi / np.log(richness) if shdi is not None and richness > 1 else None
-
-        sidi = 1 - float((proportions ** 2).sum())
-        values['simpson_diversity_index'] = sidi
-        values['simpson_evenness_index'] = sidi / (1 - 1 / richness) if richness > 1 else None
-    except Exception as diversity_error:
-        logger.warning(f"Erro ao calcular índices de diversidade manuais: {diversity_error}")
-
-    return values
-
-
 def _render_landscape_metrics(values: dict):
     """Stat tiles com as métricas de nível de paisagem — um valor único
     (não por classe), por isso não faz sentido como gráfico de barras por
@@ -1229,56 +578,6 @@ def _render_landscape_metrics(values: dict):
         with cols[i % 5]:
             st.metric(f"{icon} {short_label}", display_value, help=full_label)
 
-
-def _extract_year_from_filename(filename: str):
-    """Extrai um ano plausível (19xx/20xx) do nome do arquivo, para ordenar
-    e rotular a comparação temporal entre múltiplos GeoTIFFs (ex.:
-    'Corte_255_2010.tif' -> 2010). Usa o último padrão encontrado — em
-    nomes com mais de um número de 4 dígitos nesse intervalo, assume-se que
-    o ano vem por último (convenção comum: <área>_<ano>.tif). Retorna
-    `None` se não encontrar nenhum, caso em que a comparação cai de volta
-    para a ordem de upload."""
-    matches = re.findall(r'(?:19|20)\d{2}', filename)
-    return int(matches[-1]) if matches else None
-
-
-def _compute_fingerprint(data_source, tif_bytes=None, point_lonlat=None,
-                          buffer_dist=None, whole_raster=False, municipio_codigo=None) -> str:
-    """Identifica de forma estável 'esta mesma submissão', para o cache de
-    resultados em db.metric_results — uma resubmissão com a mesma
-    fingerprint reaproveita o resultado já calculado em vez de refazer a
-    extração (Earth Engine/GeoTIFF) e o PyLandStats.
-
-    - GeoTIFF (com ou sem ponto/município): hash dos bytes do arquivo
-      enviado — exato, reconhece o mesmo arquivo independente do nome.
-      `whole_raster` entra na fingerprint para não colidir o mesmo arquivo
-      submetido com ponto numa vez e sem ponto em outra (resultados
-      diferentes).
-    - MapBiomas ou GeoTIFF com área municipal: hash do código IBGE do
-      município (`municipio_codigo`), no lugar de ponto/buffer.
-    - MapBiomas com ponto (sem arquivo): hash do ponto (arredondado a 5
-      casas, ~1,1m — absorve o jitter de redesenhar o mesmo ponto no mapa) +
-      buffer.
-
-    Não considera qual collection do MapBiomas foi usada (auto-detectada e
-    pode mudar com o tempo, ver app.py `collection_number`) — checar isso
-    antes exigiria uma chamada ao Earth Engine, o que anularia o ganho de
-    pular a extração num cache hit. O checkbox 'Forçar novo cálculo' cobre
-    esse caso quando o usuário sabe que os dados de origem mudaram."""
-    hasher = hashlib.sha256()
-    hasher.update(data_source.encode("utf-8"))
-    hasher.update(b"|whole" if whole_raster else b"|point")
-    if tif_bytes is not None:
-        hasher.update(b"|tif|")
-        hasher.update(tif_bytes)
-    if municipio_codigo is not None:
-        hasher.update(f"|municipio|{municipio_codigo}".encode("utf-8"))
-    if point_lonlat is not None:
-        lon, lat = point_lonlat
-        hasher.update(f"|point|{round(lon, 5)},{round(lat, 5)}".encode("utf-8"))
-    if buffer_dist is not None:
-        hasher.update(f"|buffer|{round(buffer_dist)}".encode("utf-8"))
-    return hasher.hexdigest()
 
 
 MUNICIPIO_BATCH_DATA_SOURCE = "Meu raster (GeoTIFF) — lote municípios"
