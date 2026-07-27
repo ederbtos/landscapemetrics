@@ -387,6 +387,11 @@
         <button type="submit" id="btn-auth-submit" class="btn-primary" style="width: 100%;">Entrar</button>
       </form>
 
+      <div id="google-login-group" style="display: none; margin-top: 1rem;">
+        <div style="text-align: center; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.75rem;">ou</div>
+        <a href="/api/auth/google/login" class="btn-outline" style="width: 100%; display: block; box-sizing: border-box; text-align: center;">🔵 Entrar com Google</a>
+      </div>
+
       <div style="margin-top: 1rem; font-size: 0.85rem; color: var(--text-secondary);">
         <span id="auth-toggle-msg">Não tem uma conta?</span>
         <button id="btn-toggle-auth" class="btn-outline" style="padding: 0.2rem 0.6rem; font-size: 0.8rem; margin-left: 0.4rem;" onclick="toggleAuthMode()">Cadastrar-se</button>

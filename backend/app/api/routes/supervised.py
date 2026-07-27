@@ -15,7 +15,12 @@ from app.db import metric_results as metric_results_db
 
 
 def _load_legacy_module(module_name: str):
-    root_dir = Path(__file__).resolve().parents[3]
+    # backend/app/api/routes/supervised.py -> parents[4] é a raiz do repo (uma
+    # camada mais fundo que backend/app/services/landscape.py, que usa
+    # parents[3] pelo mesmo motivo). Só "funcionava" antes por acidente: como
+    # metrics.py roda primeiro em main.py e insere o caminho certo, o
+    # root_dir errado calculado aqui nunca chegava a ser de fato necessário.
+    root_dir = Path(__file__).resolve().parents[4]
     if str(root_dir) not in sys.path:
         sys.path.insert(0, str(root_dir))
     return importlib.import_module(module_name)

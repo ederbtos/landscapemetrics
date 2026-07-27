@@ -8,8 +8,8 @@ set -euo pipefail
 # Pré-requisitos (únicas decisões que ainda cabem a quem hospeda):
 #   1. Domínio com registro DNS tipo A apontando para o IP deste servidor.
 #   2. Portas 80/443 liberadas no firewall.
-#   3. .streamlit/secrets.toml já configurado (copie de
-#      .streamlit/secrets.toml.example) com jwt_secret_key e app_encryption_key.
+#   3. backend/.env já configurado (copie de backend/.env.example) com
+#      jwt_secret_key, app_encryption_key e cors_origins (domínio real, HTTPS).
 #
 # Uso: ./scripts/deploy.sh seu-dominio.exemplo.com
 
@@ -26,8 +26,8 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -f .streamlit/secrets.toml ]]; then
-  echo "Faltando .streamlit/secrets.toml. Copie de .streamlit/secrets.toml.example e preencha jwt_secret_key + app_encryption_key antes de rodar este script." >&2
+if [[ ! -f backend/.env ]]; then
+  echo "Faltando backend/.env. Copie de backend/.env.example e preencha jwt_secret_key + app_encryption_key + cors_origins antes de rodar este script." >&2
   exit 1
 fi
 

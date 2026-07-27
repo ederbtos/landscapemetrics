@@ -45,6 +45,12 @@ def get_credentials(email: str) -> dict | None:
     return json.loads(decrypted.decode("utf-8"))
 
 
+def delete_credentials(email: str) -> None:
+    with closing(sqlite3.connect(get_settings().db_path)) as conn:
+        conn.execute("DELETE FROM user_credentials WHERE email = ?", (email,))
+        conn.commit()
+
+
 def save_credentials(email: str, credentials: dict) -> None:
     fernet = _get_fernet()
     encrypted = fernet.encrypt(json.dumps(credentials).encode("utf-8"))

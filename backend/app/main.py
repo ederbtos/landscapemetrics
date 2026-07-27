@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
 ROOT_DIR = Path(__file__).resolve().parents[1]  # backend/ — para `import app.api.routes...`
 PROJECT_ROOT = ROOT_DIR.parent  # raiz do repo — onde vivem static/, app.py, clustering.py etc.
@@ -45,6 +46,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Guarda o "state"/nonce do fluxo OAuth do Google entre /api/auth/google/login
+# e /api/auth/google/callback (authlib.integrations.starlette_client precisa
+# de request.session) — não é a sessão do usuário em si, essa continua sendo
+# o JWT + refresh token de app/core/security.py.
+app.add_middleware(SessionMiddleware, secret_key=settings.jwt_secret_key)
 
 
 @app.on_event("startup")

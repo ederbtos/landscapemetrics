@@ -3,21 +3,32 @@ Descrição da funcionalidade
 ---------------------------
 Rotas de autenticação — porte de `auth.py` (formulários Streamlit
 `_render_login_form`/`_render_register_form`) para endpoints REST. Cobre
-e-mail/senha (sempre disponível) nesta Fase 1; Google OAuth fica para uma
-Fase 1b (endpoint `GET /config` já informa o frontend se deve mostrar o
-botão, mesmo antes do fluxo OAuth em si estar implementado).
+e-mail/senha e Google OAuth (`/google/login` + `/google/callback`, via
+Authlib) — o endpoint `GET /config` informa o frontend se deve mostrar o
+botão do Google (`google_oauth_configured`, ver core/config.py).
 
 Contexto técnico
 -----------------
-Cada login/registro bem-sucedido: (1) devolve um access token JWT de vida
-curta no corpo da resposta, (2) grava um refresh token opaco (hash SHA-256)
-em `refresh_tokens` e o envia em cookie httpOnly — isso é o que resolve o
-"Bloqueio conhecido" do ROADMAP.md (sessão sobrevive a F5 via
-`POST /refresh`, que o frontend chama ao carregar a página).
+Cada login/registro/callback do Google bem-sucedido: (1) devolve um access
+token JWT de vida curta no corpo da resposta (ou, no caso do Google, embutido
+no fragmento da URL de redirect — ver `_finish_google_login` abaixo, já que
+esse fluxo é uma navegação de página inteira, não um fetch), (2) grava um
+refresh token opaco (hash SHA-256) em `refresh_tokens` e o envia em cookie
+httpOnly — isso é o que resolve o "Bloqueio conhecido" do ROADMAP.md (sessão
+sobrevive a F5 via `POST /refresh`, que o frontend chama ao carregar a
+página).
+
+Um usuário que loga só via Google nunca ganha uma linha na tabela `users`
+(essa tabela é só para senha/hash bcrypt) — igual ao app Streamlit original,
+onde `st.user.email` bastava como identidade em `db.py`/demais tabelas
+(nenhuma tem FOREIGN KEY para `users`, ver `db/schema.py`).
 """
 from datetime import datetime, timezone
+from urllib.parse import quote
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from authlib.integrations.starlette_client import OAuth
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
 
 from app.core.config import get_settings
 from app.core.security import (
@@ -42,6 +53,16 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 REFRESH_COOKIE_NAME = "refresh_token"
 REFRESH_COOKIE_PATH = "/api/auth"
+
+_oauth = OAuth()
+if get_settings().google_oauth_configured:
+    _oauth.register(
+        name="google",
+        client_id=get_settings().google_client_id,
+        client_secret=get_settings().google_client_secret,
+        server_metadata_url=get_settings().google_server_metadata_url,
+        client_kwargs={"scope": "openid email profile"},
+    )
 
 
 def _issue_session(response: Response, email: str) -> TokenResponse:
@@ -112,3 +133,36 @@ def me(current_user: str = Depends(get_current_user)) -> UserResponse:
 @router.get("/config", response_model=AuthConfigResponse)
 def auth_config() -> AuthConfigResponse:
     return AuthConfigResponse(google_oauth_enabled=get_settings().google_oauth_configured)
+
+
+def _require_google_configured() -> None:
+    if not get_settings().google_oauth_configured:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Login com Google não está configurado.")
+
+
+@router.get("/google/login")
+async def google_login(request: Request):
+    _require_google_configured()
+    return await _oauth.google.authorize_redirect(request, get_settings().google_redirect_uri)
+
+
+@router.get("/google/callback")
+async def google_callback(request: Request) -> RedirectResponse:
+    _require_google_configured()
+    try:
+        token = await _oauth.google.authorize_access_token(request)
+    except Exception as exc:  # OAuthError da Authlib — código inválido/expirado/revogado
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Falha na autenticação com o Google.") from exc
+
+    email = (token.get("userinfo") or {}).get("email")
+    if not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Não foi possível obter o e-mail da conta Google.")
+
+    response = RedirectResponse(url="/index.html")
+    session = _issue_session(response, email)
+    # Navegação de página inteira (não fetch) — o access token viaja no
+    # fragmento da URL para o app.js conseguir recuperá-lo ao carregar
+    # index.html (ver checkAuthSession em static/app.js). O fragmento nunca é
+    # enviado ao servidor por design (RFC 3986), só fica acessível ao JS.
+    response.headers["location"] = f"/index.html#access_token={quote(session.access_token)}&email={quote(email)}"
+    return response

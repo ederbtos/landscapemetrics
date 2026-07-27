@@ -1,6 +1,8 @@
 """
 Rotas para Governança LGPD, Consentimento Auditável e Direitos do Titular (Art. 18)
 """
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -10,8 +12,17 @@ import json
 
 from app.api.deps import get_current_user
 from app.db import metric_results as metric_results_db
+from app.db import refresh_tokens as refresh_tokens_db
 from app.db import users as users_db
 from app.db import credentials as credentials_db
+
+# `db.py` (raiz do repo) guarda as preferências do Escritório Virtual
+# (user_settings) — mesmo padrão de reaproveitamento via sys.path de
+# landscape.py/sse.py/supervised.py (ver docstrings desses arquivos).
+_ROOT_DIR = Path(__file__).resolve().parents[4]
+if str(_ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(_ROOT_DIR))
+import db as legacy_db
 
 router = APIRouter(prefix="/api/lgpd", tags=["lgpd"])
 
@@ -75,8 +86,12 @@ def delete_user_account(current_user: str = Depends(get_current_user)):
     for item in history:
         metric_results_db.delete_metric_result(current_user, item["fingerprint"])
 
-    # Exclui credenciais
+    # Exclui credenciais, preferências, conta e revoga qualquer refresh token
+    # ativo — sem isso, um token ainda válido continuaria autenticando como
+    # esse e-mail (via POST /api/auth/refresh) mesmo depois da "exclusão".
     credentials_db.delete_credentials(current_user)
+    legacy_db.delete_user_settings(current_user)
+    refresh_tokens_db.revoke_all_for_user(current_user)
     users_db.delete_user(current_user)
 
     return {

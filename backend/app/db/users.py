@@ -38,3 +38,11 @@ def user_exists(email: str) -> bool:
     with closing(sqlite3.connect(get_settings().db_path)) as conn:
         row = conn.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone()
     return row is not None
+
+
+def delete_user(email: str) -> None:
+    """Remove a linha de senha/hash — usuários que só logam via Google nunca
+    têm uma aqui, então isso é um no-op inofensivo para eles."""
+    with closing(sqlite3.connect(get_settings().db_path)) as conn:
+        conn.execute("DELETE FROM users WHERE email = ?", (email,))
+        conn.commit()

@@ -13,12 +13,12 @@
 | 7 | Agrupamento Multivariado K-Means & DBSCAN com PCA 2D e curva do cotovelo | ✅ Concluída | 100% |
 | 8 | Suporte a Banco de Dados PostgreSQL & Escritório Virtual com isolamento por usuário | ✅ Concluída | 100% |
 | 9 | PWA Mobile, Governança LGPD, Defesa em Profundidade de IA, Acessibilidade WCAG/VLibras e Avatares 3D (Maria Júlia & Pedro) | ✅ Concluída | 100% |
-| 10 | Dados de referência nacionais pré-carregados no banco (malha municipal IBGE, MapBiomas agregado, PRODES, ANA) | 🔧 Em andamento | ~75% |
+| 10 | Dados de referência nacionais pré-carregados no banco (malha municipal IBGE, MapBiomas agregado, PRODES, ANA) | 🔧 Em andamento | ~95% |
 
-> A Fase 10 (2026-07-26) cobre a pré-carga de dados nacionais de referência no banco do backend
-> FastAPI — ver detalhamento abaixo. Malha municipal está 100% concluída (5.570 municípios).
-> PRODES e MapBiomas estão retomados e em andamento em paralelo (ver "Atividades pendentes"
-> abaixo); ANA está bloqueada por credencial (ação do operador, não de código).
+> A Fase 10 (2026-07-26, dados concluídos em 2026-07-27) cobre a pré-carga de dados nacionais de
+> referência no banco do backend FastAPI — ver detalhamento abaixo. Malha municipal (5.570
+> municípios), PRODES (3,94M registros, 6 biomas) e MapBiomas (540/540 UF×ano, 2004–2023) estão
+> 100% concluídos; só falta ANA, bloqueada por credencial (ação do operador, não de código).
 
 
 ## Status atual (2026-07-04)
@@ -418,7 +418,7 @@ Google. Em vez de depender só da credencial OAuth, foi adicionado um sistema de
 
 ## Próxima fase
 
-## Atividades pendentes (snapshot 2026-07-26, atualizado 22:52)
+## Atividades pendentes (snapshot 2026-07-27, atualizado ~14:06)
 
 Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo plano. Esta seção
 é pensada como ponto de retomada caso seja necessário continuar o trabalho depois.
@@ -443,53 +443,78 @@ Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo pl
   `seed_prodes.py` está inserindo ativamente causou 12 erros transitórios de "database is locked"
   (perda de 12 features de ~1,86M linhas, negligenciável) — evitar rodar os dois ao mesmo tempo em
   execuções futuras, ou aceitar essa perda mínima.
-- **PRODES** — em progresso, retomado do checkpoint após interrupção (sessão anterior parou às
-  13:14, sem erro — provavelmente o terminal/processo foi encerrado externamente). Amazônia
-  (802.282) e Pantanal (500) confirmados concluídos; Cerrado em andamento — bem maior do que a
-  estimativa inicial de "~835k só a Amazônia" sugeria: só o Cerrado já passou de 2 milhões de
-  features processadas nesta retomada, ainda sem terminar. Total no banco agora: **2.824.770**
-  registros. Faltam Caatinga, Mata Atlântica e Pampa depois do Cerrado.
-- **MapBiomas via Earth Engine** — **retomado**: a credencial de conta de serviço de
-  `ederbtos@gmail.com` já estava salva (criptografada) em `user_credentials` no próprio banco do
-  app desde 2026-07-05 (fluxo normal da Fase 3 — o usuário colou o JSON na UI) — decifrada com a
-  `app_encryption_key` real de `.streamlit/secrets.toml` (a mesma chave usada quando a credencial
-  foi salva), gravada temporariamente fora do repositório (diretório de scratch da sessão, nunca
-  commitada) e passada via `--credentials` para `seed_mapbiomas_stats.py`. Conta de serviço:
-  `land-638@land-501423.iam.gserviceaccount.com` (projeto `land-501423`), validada com uma chamada
-  real ao Earth Engine antes de retomar o job. Checkpoint retomou exatamente de onde parou
-  (AC–GO/2010) e já avançou bem além: 14+ de 27 UFs tocadas (até PA), **544.249** linhas em
-  `mapbiomas_municipio_stats`. Segue rodando em segundo plano.
+- **PRODES** — **concluído (2026-07-27)**: todos os 6 biomas monitorados no banco — Amazônia
+  (802.282), Cerrado (2.335.909), Caatinga (556.926), Pampa (205.339), Pantanal (37.155) — total
+  **3.937.611** registros. Terminou sozinho em segundo plano (log mostra o resumo final por bioma);
+  bem maior do que a estimativa inicial de "~835k só a Amazônia" sugeria.
+- **MapBiomas via Earth Engine** — **concluído (2026-07-27)**: 540/540 combinações UF×ano
+  (27 UFs × 2004–2023) em `mapbiomas_municipio_stats`. A credencial de conta de serviço de
+  `ederbtos@gmail.com` (`land-638@land-501423.iam.gserviceaccount.com`, projeto `land-501423`) já
+  estava salva (criptografada) em `user_credentials` desde 2026-07-05 — decifrada de novo nesta
+  sessão para retomar o job depois que ele parou silenciosamente em SP→SE (sem traceback, mesmo
+  padrão de "processo encerrado externamente" já visto no PRODES). Achado ao investigar: o
+  fallback de asset em `pick_asset_for_band`/`_extract_mapbiomas_pixels` (`except Exception:
+  continue`) mascara qualquer erro real (nesse caso, `SSLError`/`SSLEOFError` batendo em
+  `oauth2.googleapis.com`/`earthengine-highvolume.googleapis.com`) como se fosse simplesmente "esse
+  asset não tem essa banda" — por isso o log mostrava dezenas de "Nenhum asset MapBiomas..." em
+  menos de 1 segundo (rápido demais para chamadas de rede reais), quando na verdade era a sessão do
+  Earth Engine caindo. Retomado com sucesso após reautenticar; **ano 2024 confirmado indisponível
+  em todas as UFs testadas** (mesmo padrão já visto em SC) — não é um bug, a coleção do MapBiomas
+  ainda não publicou `classification_2024`. Possível melhoria futura (fora do escopo agora): não
+  mascarar erros de rede/autenticação como "asset ausente" nesse fallback.
 - **ANA hidroclimática** — bloqueado (aguardando credencial pedida por e-mail a
-  `hidro@ana.gov.br`) — ação do operador, não de código.
-- **Validar PRODES e IBGE ao vivo (pilotos reais)** — parcialmente feito (ingestão real rodando
-  há horas com dados reais); falta uma validação funcional das rotas `/api/prodes/municipio/{codigo}`
-  e `/api/ibge/municipios/{codigo}/malha` contra o app rodando de ponta a ponta.
-- **Agendar/verificar health-check periódico para os jobs long-running** — em andamento (ver
-  próximos passos).
+  `hidro@ana.gov.br`) — ação do operador, não de código. Único item de dados ainda pendente na
+  Fase 10.
+- **Validar PRODES e IBGE ao vivo (pilotos reais)** — parcialmente feito (dados reais completos no
+  banco agora); falta uma validação funcional das rotas `/api/prodes/municipio/{codigo}` e
+  `/api/ibge/municipios/{codigo}/malha` contra o app rodando de ponta a ponta.
+- **Agendar/verificar health-check periódico para os jobs long-running** — não se aplica mais:
+  PRODES e MapBiomas terminaram (ver acima); só resta ANA, que nem chegou a rodar (bloqueada por
+  credencial).
 
 ### Próximos passos sugeridos
 
-- Aguardar PRODES terminar Cerrado/Caatinga/Mata Atlântica/Pampa e MapBiomas terminar as ~13 UFs
-  restantes (checkpoints permitem retomar a qualquer momento se interrompidos de novo).
-- Rodar `scripts/reresolve_prodes_municipios.py` de novo só depois que o PRODES terminar
-  totalmente (evita a contenção de lock observada acima — 12 features perdidas de ~2,8M ao rodar
-  concorrente com uma ingestão ativa).
+- Rodar `scripts/reresolve_prodes_municipios.py` de novo agora que o PRODES terminou totalmente —
+  **feito (2026-07-27 14:08)**: 622 registros sem município (mais do que os ~233 anteriores, porque
+  Cerrado/Caatinga/Pampa/Pantanal terminaram de ingerir depois da última passada), **0 resolvidos
+  nesta rodada** — todos os 622 têm centroide fora de qualquer polígono da malha (provavelmente
+  litoral/fronteira), comportamento esperado de "nunca fabricar dado", não um bug.
 - Validar manualmente as rotas novas (`/api/prodes/...`, `/api/ibge/...`, `/api/mapbiomas/...`,
   `/api/ana/...`) contra o backend rodando, com um token real.
 - Fase 4 (deploy) segue pendente de decisão de infraestrutura do usuário — ver seção abaixo.
 
 ### Fase 4 — Deploy
 
-Toda a mecânica está automatizada; o que falta é só a execução — decisão de infraestrutura que
-cabe a quem for hospedar o app:
+**Regressão corrigida (2026-07-27)**: a migração de Streamlit para backend FastAPI + frontend
+estático (commit `af4a62f`, 2026-07-25) reescreveu `Dockerfile`/`docker-compose.prod.yml` para a
+nova arquitetura (porta 8000, variáveis de ambiente em vez de `secrets.toml`), mas nesse processo
+o serviço `caddy` foi removido inteiramente de `docker-compose.prod.yml` — a stack de produção
+ficou publicando a porta 8000 direto no host, **sem HTTPS**, e `Caddyfile.example` continuava
+apontando para a porta antiga (8501). Corrigido nesta sessão:
+
+- `docker-compose.prod.yml`: serviço `caddy` restaurado (portas 80/443, volumes de certificado),
+  `app` volta a não publicar porta para o host (`expose: 8000`, só acessível via Caddy), segredos
+  via `env_file: backend/.env` (em vez do volume de `secrets.toml` do modelo antigo).
+- `Caddyfile.example`: `reverse_proxy app:8501` → `app:8000`.
+- Novo `backend/.env.example` (não existia — equivalente ao antigo
+  `.streamlit/secrets.toml.example`, com `jwt_secret_key`, `app_encryption_key`, `cors_origins`,
+  `cookie_secure`, credenciais Google opcionais).
+- `scripts/deploy.sh`: checagem de pré-requisito trocada de `.streamlit/secrets.toml` para
+  `backend/.env`.
+- README.md: seções de instalação/deploy e "Estrutura do Projeto" atualizadas para a arquitetura
+  atual (`backend/` + `static/`, `app.py`/`auth.py`/`db.py` documentados como versão anterior
+  substituída).
+
+Toda a mecânica está automatizada de novo; o que falta é só a execução — decisão de infraestrutura
+que cabe a quem for hospedar o app:
 
 1. Escolher onde rodar (qualquer servidor com Docker: VPS próprio, ex. Hetzner/DigitalOcean/OVH,
    ou uma plataforma gerenciada como Railway/Render que já resolve HTTPS por você — nesse caso
    `docker-compose.prod.yml`/Caddy não são necessários).
 2. Se for VPS com Docker: apontar um domínio (registro DNS tipo A) para o IP do servidor, liberar
-   as portas 80/443 no firewall, preencher `.streamlit/secrets.toml` (a partir do
-   `.streamlit/secrets.toml.example`, com `jwt_secret_key` e `app_encryption_key` reais) e rodar
-   `./scripts/deploy.sh seu-dominio.com` — o script gera o `Caddyfile` e sobe a stack.
+   as portas 80/443 no firewall, preencher `backend/.env` (a partir do `backend/.env.example`, com
+   `jwt_secret_key`, `app_encryption_key` e `cors_origins` reais) e rodar
+   `./scripts/deploy.sh seu-dominio.com` — o script gera o `Caddyfile` e sobe a stack (app + Caddy).
 3. Agendar `./scripts/backup-db.sh` via `cron` (opcionalmente com `BACKUP_REMOTE` apontando para
    fora do servidor) para que `data/app.db` sobreviva a rebuilds/migrações — a mecânica já existe,
    falta só decidir o destino externo do backup.

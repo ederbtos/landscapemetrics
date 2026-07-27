@@ -112,14 +112,15 @@ cd landscapemetrics
 ### 2. Configure os Segredos
 
 ```bash
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+cp backend/.env.example backend/.env
 ```
 
-Edite `.streamlit/secrets.toml` e preencha:
+Edite `backend/.env` e preencha:
 
-- `jwt_secret_key` (obrigatório): gere com `python -c "import secrets; print(secrets.token_hex(32))"` — assina a sessão do login por e-mail/senha
+- `jwt_secret_key` (obrigatório): gere com `python -c "import secrets; print(secrets.token_hex(32))"` — assina o JWT de sessão
 - `app_encryption_key` (obrigatório): gere com `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
-- `[auth]` (opcional): só se quiser o botão "Entrar com Google" — `client_id`, `client_secret` e `redirect_uri` da credencial OAuth do Google, e um `cookie_secret` aleatório
+- `cors_origins` (obrigatório): origens autorizadas a chamar a API (em produção, o domínio real em HTTPS)
+- `google_client_id`/`google_client_secret`/`google_redirect_uri` (opcional): só se quiser o botão "Entrar com Google"
 
 Essas configurações protegem o login e a criptografia das credenciais do Earth Engine — **nunca** faça commit desse arquivo (já está no `.gitignore`).
 
@@ -135,11 +136,11 @@ docker compose up --build
 python -m venv .venv
 .venv\Scripts\activate     # Windows
 # source .venv/bin/activate  # Linux/Mac
-pip install -r requirements.txt
-streamlit run app.py
+pip install -r backend/requirements.txt
+cd backend && uvicorn app.main:app --reload
 ```
 
-Acesse `http://localhost:8501`.
+Acesse `http://localhost:8000`.
 
 ### 4. Deploy em produção (HTTPS)
 
@@ -147,12 +148,12 @@ Fase 4 do roadmap: a stack de produção (HTTPS automático via [Caddy](https://
 
 ```bash
 # no servidor, com o domínio já apontando (DNS tipo A) para o IP dele
-# e .streamlit/secrets.toml já preenchido (jwt_secret_key, app_encryption_key,
-# e opcionalmente [auth] se for usar o botão do Google)
+# e backend/.env já preenchido (jwt_secret_key, app_encryption_key,
+# cors_origins e opcionalmente google_client_id/secret/redirect_uri)
 ./scripts/deploy.sh seu-dominio.exemplo.com
 ```
 
-O script gera o `Caddyfile` a partir de `Caddyfile.example` e sobe `docker-compose.prod.yml`. Se estiver usando o login com Google, ajuste `[auth].redirect_uri` em `secrets.toml` e a credencial OAuth no Google Cloud Console para `https://SEU_DOMINIO/oauth2callback`. Se preferir uma plataforma gerenciada (Railway, Render, Streamlit Community Cloud) que já resolve HTTPS por conta própria, `docker-compose.prod.yml`/Caddy/`deploy.sh` não são necessários — use direto o `Dockerfile`.
+O script gera o `Caddyfile` a partir de `Caddyfile.example` e sobe `docker-compose.prod.yml` (app + Caddy). Se estiver usando o login com Google, ajuste `google_redirect_uri` em `backend/.env` e a credencial OAuth no Google Cloud Console para `https://SEU_DOMINIO/oauth2callback`. Se preferir uma plataforma gerenciada (Railway, Render) que já resolve HTTPS por conta própria, `docker-compose.prod.yml`/Caddy/`deploy.sh` não são necessários — use direto o `Dockerfile`.
 
 Para backup de `data/app.db` (credenciais criptografadas por usuário), agende `./scripts/backup-db.sh` via `cron` — veja o cabeçalho do script para o exemplo de crontab e a variável opcional `BACKUP_REMOTE`.
 
@@ -309,25 +310,29 @@ Organizadas conforme as categorias do [FRAGSTATS](https://fragstats.org/index.ph
 
 ```
 landscapemetrics/
-├── app.py                          # Aplicação principal (Streamlit)
-├── auth.py                         # Landing page + login/logout (e-mail/senha + Google opcional)
-├── db.py                           # Persistência criptografada das credenciais GEE por usuário
-├── requirements.txt                # Dependências Python
-├── Dockerfile                      # Imagem da aplicação
-├── docker-compose.yml              # Orquestração local (app + volumes)
+├── backend/                        # API FastAPI (substitui app.py como ponto de entrada)
+│   ├── app/
+│   │   ├── main.py                 # Monta rotas + serve o frontend estático em "/"
+│   │   ├── api/routes/             # Auth, credenciais, métricas, IBGE, SSE, PRODES, MapBiomas, ANA...
+│   │   ├── core/config.py          # Settings via variáveis de ambiente (.env)
+│   │   └── db/                     # Schema + acesso a data/app.db (SQLite)
+│   ├── requirements.txt            # Dependências Python do backend
+│   ├── .env.example                # Modelo de configuração de segredos
+│   └── .env                        # Segredos locais (nunca commitado)
+├── static/                         # Frontend (landing page + ferramenta + PWA)
+├── app.py, auth.py, db.py          # Versão anterior (Streamlit) — substituída pelo backend acima
+├── Dockerfile                      # Imagem da aplicação (empacota backend/ + static/)
+├── docker-compose.yml              # Orquestração local (app na porta 8000)
 ├── docker-compose.prod.yml         # Stack de produção (app + Caddy/HTTPS)
 ├── Caddyfile.example               # Modelo de config do proxy reverso (produção)
 ├── scripts/
 │   ├── deploy.sh                   # Deploy de produção em 1 comando (Fase 4)
-│   └── backup-db.sh                # Backup datado de data/app.db (+ envio remoto opcional)
+│   ├── backup-db.sh                # Backup datado de data/app.db (+ envio remoto opcional)
+│   └── seed_*.py                   # Pré-carga dos dados de referência nacionais (Fase 10)
 ├── README.md                       # Este arquivo
 ├── ROADMAP.md                      # Status do projeto e próximas fases
-├── data/
-│   └── app.db                      # SQLite com as credenciais criptografadas (gerado em runtime)
-└── .streamlit/
-    ├── config.toml                 # maxUploadSize (5GB, para o GeoTIFF opcional)
-    ├── secrets.toml.example        # Modelo de configuração de segredos
-    └── secrets.toml                # Segredos locais (nunca commitado)
+└── data/
+    └── app.db                      # SQLite com usuários/credenciais/histórico (gerado em runtime)
 ```
 
 ---

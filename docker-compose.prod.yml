@@ -1,16 +1,54 @@
+# Stack de produção: mesma imagem do app (backend FastAPI + frontend estático,
+# ver Dockerfile), mas atrás de um proxy reverso (Caddy) que termina HTTPS
+# automaticamente via Let's Encrypt. Genérico para qualquer VPS com Docker —
+# não é específico de um provedor de hospedagem.
+#
+# Pré-requisitos antes de rodar:
+#   1. Um domínio com registro DNS tipo A apontando para o IP deste servidor.
+#   2. Portas 80 e 443 liberadas no firewall do servidor.
+#   3. cp Caddyfile.example Caddyfile   (e edite com o domínio real)
+#   4. cp backend/.env.example backend/.env   (e preencha jwt_secret_key,
+#      app_encryption_key, cors_origins com o domínio real em HTTPS)
+#
+# Uso: docker compose -f docker-compose.prod.yml up -d --build
+#
+# Diferença deliberada em relação a docker-compose.yml (uso local): aqui a
+# porta 8000 do app NÃO é publicada para o host — todo o tráfego externo
+# passa pelo Caddy, que é o único serviço com portas expostas.
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
+    env_file:
+      - backend/.env
     environment:
-      JWT_SECRET_KEY: change-me-in-production
-      APP_ENCRYPTION_KEY: change-me-in-production
-      CORS_ORIGINS: http://localhost:8000
-      COOKIE_SECURE: "true"
-      DB_PATH: data/app.db
-    ports:
-      - "8000:8000"
+      # Mesma chave (minúscula) usada em backend/.env — precisa bater
+      # exatamente para que "environment" sobrescreva "env_file" em vez de
+      # criar uma variável irmã (DB_PATH != db_path para o shell/Compose).
+      # Sempre relativo ao WORKDIR /app do container (ver Dockerfile) —
+      # sobrescreve um eventual db_path=../data/app.db herdado de um .env
+      # de desenvolvimento local (onde o cwd é backend/, não a raiz do repo).
+      db_path: data/app.db
+    expose:
+      - "8000"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

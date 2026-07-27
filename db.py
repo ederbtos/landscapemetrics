@@ -29,7 +29,16 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get("DB_PATH", os.path.join("data", "app.db"))
+# O default é ancorado na localização deste próprio arquivo (raiz do repo),
+# não no cwd do processo — sem isso, rodar o backend com
+# `cd backend && uvicorn app.main:app` (cwd=backend/) faz esse módulo
+# apontar para um data/app.db novo e vazio dentro de backend/, diferente do
+# banco real usado por backend/app/core/config.py (Settings.db_path), que é
+# relativo ao WORKDIR/cwd esperado (raiz do repo) — mesmo arquivo físico,
+# resolvido de dois jeitos diferentes. DB_PATH (variável de ambiente,
+# maiúscula) continua podendo sobrescrever explicitamente, se definida.
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.environ.get("DB_PATH", os.path.join(_REPO_ROOT, "data", "app.db"))
 
 
 def _get_fernet() -> Fernet:
@@ -426,4 +435,12 @@ def save_user_settings(email: str, settings_dict: dict) -> None:
         cursor.execute(
             sql, (email, json.dumps(settings_dict), datetime.now(timezone.utc).isoformat())
         )
+
+
+def delete_user_settings(email: str) -> None:
+    """Remove as preferências do Escritório Virtual — parte do fluxo de
+    eliminação de dados da LGPD (ver backend/app/api/routes/lgpd.py)."""
+    with get_db() as (db_type, conn, cursor):
+        sql = _adapt_query("DELETE FROM user_settings WHERE user_email = ?", db_type)
+        cursor.execute(sql, (email,))
 

@@ -19,6 +19,11 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r /tmp/requirements
 
 COPY backend /app/backend
 COPY static /app/static
+# Módulos legados na raiz do repo, reaproveitados via importlib/import direto
+# por backend/app/services/landscape.py, backend/app/api/routes/sse.py|
+# supervised.py|user.py (ver docstrings desses arquivos) — não confundir com
+# app.py/auth.py, que dependem do Streamlit e não são usados pelo backend.
+COPY landscape_core.py clustering.py supervised_models.py db.py ./
 
 EXPOSE 8000
 

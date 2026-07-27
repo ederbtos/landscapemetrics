@@ -55,6 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadUfs();
   setupAccessibility();
   checkAuthSession();
+  loadGoogleLoginOption();
   toggleTifUpload();
   updateStepper();
 });
@@ -65,11 +66,62 @@ function authHeaders() {
   return { 'Authorization': `Bearer ${localStorage.getItem('access_token')}` };
 }
 
-function checkAuthSession() {
-  const token = localStorage.getItem('access_token');
-  const userEmail = localStorage.getItem('user_email');
+// Depois do redirect de /api/auth/google/callback, o access token chega no
+// fragmento da URL (#access_token=...&email=...) em vez de um fetch — ver
+// docstring de google_callback em backend/app/api/routes/auth.py.
+function _consumeGoogleRedirectFragment() {
+  if (!window.location.hash.includes('access_token=')) return;
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const token = params.get('access_token');
+  const email = params.get('email');
+  if (token && email) {
+    localStorage.setItem('access_token', token);
+    localStorage.setItem('user_email', email);
+  }
+  window.history.replaceState({}, document.title, window.location.pathname);
+}
+
+// Confirma que o access token em localStorage ainda é aceito pela API —
+// sem isso, um token expirado (15min, ver access_token_expire_minutes)
+// deixava a UI achando que a sessão seguia válida só por existir no
+// localStorage, mostrando a ferramenta com uma sessão na prática já morta.
+async function _isAccessTokenValid(token) {
+  try {
+    const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Usa o refresh token (cookie httpOnly) para renovar o access token sem
+// precisar logar de novo — o endpoint já existia em /api/auth/refresh, mas
+// nada no frontend o chamava (resolve de fato o "sessão não sobrevive a F5"
+// do ROADMAP.md).
+async function _tryRefreshAccessToken() {
+  try {
+    const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'same-origin' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    localStorage.setItem('access_token', data.access_token);
+    return data.access_token;
+  } catch {
+    return null;
+  }
+}
+
+async function checkAuthSession() {
+  _consumeGoogleRedirectFragment();
+
   const container = document.getElementById('user-session-container');
   const appShell = document.getElementById('app-shell');
+  let token = localStorage.getItem('access_token');
+  let userEmail = localStorage.getItem('user_email');
+
+  if (token && !(await _isAccessTokenValid(token))) {
+    token = await _tryRefreshAccessToken();
+    if (!token) userEmail = null;
+  }
 
   if (token && userEmail) {
     container.innerHTML = `
@@ -81,9 +133,22 @@ function checkAuthSession() {
     loadGeeCredentialsStatus();
     updateStepper();
   } else {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('user_email');
     container.innerHTML = `<button id="btn-open-login" class="btn-primary" onclick="openAuthModal()">Entrar / Cadastrar</button>`;
     appShell.style.display = 'none';
     openAuthModal();
+  }
+}
+
+async function loadGoogleLoginOption() {
+  try {
+    const res = await fetch('/api/auth/config');
+    const data = await res.json();
+    document.getElementById('google-login-group').style.display = data.google_oauth_enabled ? 'block' : 'none';
+  } catch {
+    // Sem conexão com a API ainda: mantém o botão do Google escondido em vez
+    // de mostrar uma opção que pode não estar configurada.
   }
 }
 

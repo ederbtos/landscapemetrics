@@ -6,7 +6,7 @@ services:
     environment:
       JWT_SECRET_KEY: dev-jwt-secret-change-me
       APP_ENCRYPTION_KEY: dev-encryption-key-change-me
-      CORS_ORIGINS: http://localhost:8000
+      CORS_ORIGINS: '["http://localhost:8000"]'
       COOKIE_SECURE: "false"
       DB_PATH: data/app.db
     ports:
