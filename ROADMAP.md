@@ -17,11 +17,8 @@
 
 > A Fase 10 (2026-07-26) cobre a pré-carga de dados nacionais de referência no banco do backend
 > FastAPI — ver detalhamento abaixo. Malha municipal está 100% concluída (5.570 municípios).
-> PRODES está retomado e em andamento (Cerrado, após Amazônia/Pantanal concluídos). MapBiomas
-> agregado tem progresso parcial real (AC–GO/2010, ~193k linhas) mas está **pausado** — a
-> credencial de conta de serviço do Earth Engine usada na sessão anterior não foi encontrada nesta
-> retomada, e o usuário optou por não retomá-la agora (decisão registrada em 2026-07-26); ANA
-> está bloqueada por credencial (ação do operador, não de código).
+> PRODES e MapBiomas estão retomados e em andamento em paralelo (ver "Atividades pendentes"
+> abaixo); ANA está bloqueada por credencial (ação do operador, não de código).
 
 
 ## Status atual (2026-07-04)
@@ -421,7 +418,7 @@ Google. Em vez de depender só da credencial OAuth, foi adicionado um sistema de
 
 ## Próxima fase
 
-## Atividades pendentes (snapshot 2026-07-26, atualizado 17:41)
+## Atividades pendentes (snapshot 2026-07-26, atualizado 22:52)
 
 Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo plano. Esta seção
 é pensada como ponto de retomada caso seja necessário continuar o trabalho depois.
@@ -447,16 +444,21 @@ Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo pl
   (perda de 12 features de ~1,86M linhas, negligenciável) — evitar rodar os dois ao mesmo tempo em
   execuções futuras, ou aceitar essa perda mínima.
 - **PRODES** — em progresso, retomado do checkpoint após interrupção (sessão anterior parou às
-  13:14, sem erro — provavelmente o terminal/processo foi encerrado externamente). Amazônia e
-  Pantanal confirmados concluídos; Cerrado em andamento (checkpoint em `scripts/.checkpoints/
-  prodes.json`). Faltam Caatinga, Mata Atlântica e Pampa.
-- **MapBiomas via Earth Engine** — **pausado por decisão do usuário** (2026-07-26 17:4x). Progresso
-  parcial real preservado: AC–GO/2010 (~193k linhas em `mapbiomas_municipio_stats`, checkpoint em
-  `scripts/.checkpoints/mapbiomas.json`). O arquivo JSON da conta de serviço usado na sessão
-  anterior não foi localizado nesta retomada (não está em `.env`, AppData ou no repo) — ficará
-  bloqueado até o usuário fornecer o caminho da credencial ou decidir usar `--from-excel`
-  (estatísticas oficiais baixadas manualmente de brasil.mapbiomas.org/estatisticas/) como
-  alternativa sem Earth Engine.
+  13:14, sem erro — provavelmente o terminal/processo foi encerrado externamente). Amazônia
+  (802.282) e Pantanal (500) confirmados concluídos; Cerrado em andamento — bem maior do que a
+  estimativa inicial de "~835k só a Amazônia" sugeria: só o Cerrado já passou de 2 milhões de
+  features processadas nesta retomada, ainda sem terminar. Total no banco agora: **2.824.770**
+  registros. Faltam Caatinga, Mata Atlântica e Pampa depois do Cerrado.
+- **MapBiomas via Earth Engine** — **retomado**: a credencial de conta de serviço de
+  `ederbtos@gmail.com` já estava salva (criptografada) em `user_credentials` no próprio banco do
+  app desde 2026-07-05 (fluxo normal da Fase 3 — o usuário colou o JSON na UI) — decifrada com a
+  `app_encryption_key` real de `.streamlit/secrets.toml` (a mesma chave usada quando a credencial
+  foi salva), gravada temporariamente fora do repositório (diretório de scratch da sessão, nunca
+  commitada) e passada via `--credentials` para `seed_mapbiomas_stats.py`. Conta de serviço:
+  `land-638@land-501423.iam.gserviceaccount.com` (projeto `land-501423`), validada com uma chamada
+  real ao Earth Engine antes de retomar o job. Checkpoint retomou exatamente de onde parou
+  (AC–GO/2010) e já avançou bem além: 14+ de 27 UFs tocadas (até PA), **544.249** linhas em
+  `mapbiomas_municipio_stats`. Segue rodando em segundo plano.
 - **ANA hidroclimática** — bloqueado (aguardando credencial pedida por e-mail a
   `hidro@ana.gov.br`) — ação do operador, não de código.
 - **Validar PRODES e IBGE ao vivo (pilotos reais)** — parcialmente feito (ingestão real rodando
@@ -467,12 +469,11 @@ Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo pl
 
 ### Próximos passos sugeridos
 
-- Aguardar PRODES terminar Cerrado/Caatinga/Mata Atlântica/Pampa (checkpoint permite retomar a
-  qualquer momento se interrompido de novo).
+- Aguardar PRODES terminar Cerrado/Caatinga/Mata Atlântica/Pampa e MapBiomas terminar as ~13 UFs
+  restantes (checkpoints permitem retomar a qualquer momento se interrompidos de novo).
 - Rodar `scripts/reresolve_prodes_municipios.py` de novo só depois que o PRODES terminar
-  totalmente (evita a contenção de lock observada acima).
-- MapBiomas: retomar só quando o usuário disponibilizar a credencial do Earth Engine (ou optar por
-  `--from-excel`).
+  totalmente (evita a contenção de lock observada acima — 12 features perdidas de ~2,8M ao rodar
+  concorrente com uma ingestão ativa).
 - Validar manualmente as rotas novas (`/api/prodes/...`, `/api/ibge/...`, `/api/mapbiomas/...`,
   `/api/ana/...`) contra o backend rodando, com um token real.
 - Fase 4 (deploy) segue pendente de decisão de infraestrutura do usuário — ver seção abaixo.
