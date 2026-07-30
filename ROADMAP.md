@@ -566,9 +566,28 @@ Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo pl
   em todas as UFs testadas** (mesmo padrão já visto em SC) — não é um bug, a coleção do MapBiomas
   ainda não publicou `classification_2024`. Possível melhoria futura (fora do escopo agora): não
   mascarar erros de rede/autenticação como "asset ausente" nesse fallback.
-- **ANA hidroclimática** — bloqueado (aguardando credencial pedida por e-mail a
-  `hidro@ana.gov.br`) — ação do operador, não de código. Único item de dados ainda pendente na
-  Fase 10.
+- **ANA hidroclimática — script implementado, ingestão real ainda não rodou (2026-07-30)**: o
+  usuário obteve a credencial (pedida por e-mail a `hidro@ana.gov.br`). `scripts/
+  seed_ana_hidroclimatica.py` foi reescrito do zero a partir do manual oficial baixado ao vivo
+  (`ana.gov.br/hidrowebservice/manual`, versão 20.02.2026) — antes era só um stub especulativo sem
+  chamada real nenhuma. Implementado: autenticação (`GET .../OAUth/v1` com headers
+  `Identificador`/`Senha`, token de 60min gerenciado por `TokenManager` com renovação automática),
+  inventário de estações (`HidroInventarioEstacoes/v1`) e série telemétrica adotada
+  (`HidroinfoanaSerieTelemetricaAdotada/v1`). Município resolvido por junção espacial
+  (lat/lon da estação × polígono de `municipios_malha`, mesmo padrão STRtree de
+  `seed_prodes.py`) — o campo `Municipio_Codigo` que a própria ANA devolve é um código interno
+  dela, não o código IBGE usado no resto do projeto, então não é reaproveitado diretamente.
+  **Achado importante ao ler o manual, muda a expectativa do nome da tabela
+  `ana_serie_historica`**: as únicas rotas documentadas (todas sob
+  "WS-EstacoesTelemetricasController", que o próprio manual descreve como "todas as rotas
+  disponíveis") são telemétricas de curto prazo — a única rota de série com exemplo real
+  filtra por uma janela relativa (`RangeIntervaloDeBusca`, só `DIAS_30` confirmado no manual), não
+  um backfill de décadas. Se a ANA tiver uma rota separada para estações convencionais/histórico
+  longo, ela não aparece neste manual. Credencial deliberadamente não passou pelo chat/histórico
+  de comandos — o script lê de `ANA_IDENTIFICADOR`/`ANA_SENHA` (env) ou `--identificador`/`--senha`,
+  para o usuário rodar no próprio terminal. **Pendente**: rodar um piloto pequeno
+  (`--limit-estacoes`/`--municipio-codigo`/`--so-inventario`) para confirmar ao vivo o formato real
+  da resposta antes do lote nacional completo — igual foi feito com PRODES/MapBiomas.
 - **Validar PRODES e IBGE ao vivo (pilotos reais)** — parcialmente feito (dados reais completos no
   banco agora); falta uma validação funcional das rotas `/api/prodes/municipio/{codigo}` e
   `/api/ibge/municipios/{codigo}/malha` contra o app rodando de ponta a ponta.
