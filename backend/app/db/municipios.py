@@ -91,6 +91,14 @@ def list_municipios_by_uf(uf: str) -> list:
     return [dict(zip(cols, row)) for row in rows]
 
 
+def list_ufs() -> list[str]:
+    with closing(sqlite3.connect(get_settings().db_path)) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT uf FROM municipios_malha ORDER BY uf"
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
 def count_municipios() -> int:
     with closing(sqlite3.connect(get_settings().db_path)) as conn:
         return conn.execute("SELECT COUNT(*) FROM municipios_malha").fetchone()[0]

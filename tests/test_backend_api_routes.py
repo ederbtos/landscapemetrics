@@ -163,6 +163,48 @@ async def test_ibge_malha_route_uses_cache(test_client: AsyncClient):
 
 
 @pytest.mark.anyio
+async def test_ibge_ufs_route_uses_cache_and_skips_live_call(monkeypatch, test_client: AsyncClient):
+    import app.api.routes.ibge as ibge_routes
+    import app.db.municipios as municipios_db
+
+    municipios_db.save_municipio_malha("4205407", "Florianópolis", "SC", _sample_geojson())
+    municipios_db.save_municipio_malha("5208707", "Goiânia", "GO", _sample_geojson())
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("não deveria chamar a API ao vivo do IBGE com o cache preenchido")
+
+    monkeypatch.setattr(ibge_routes.requests, "get", _fail)
+
+    response = await test_client.get("/api/ibge/ufs")
+    assert response.status_code == 200
+    assert response.json() == [
+        {"sigla": "GO", "nome": "Goiás"},
+        {"sigla": "SC", "nome": "Santa Catarina"},
+    ]
+
+
+@pytest.mark.anyio
+async def test_ibge_municipios_route_uses_cache_and_skips_live_call(monkeypatch, test_client: AsyncClient):
+    import app.api.routes.ibge as ibge_routes
+    import app.db.municipios as municipios_db
+
+    municipios_db.save_municipio_malha("5208707", "Goiânia", "GO", _sample_geojson())
+    municipios_db.save_municipio_malha("5201108", "Abadia de Goiás", "GO", _sample_geojson())
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("não deveria chamar a API ao vivo do IBGE com o cache preenchido")
+
+    monkeypatch.setattr(ibge_routes.requests, "get", _fail)
+
+    response = await test_client.get("/api/ibge/ufs/GO/municipios")
+    assert response.status_code == 200
+    assert response.json() == [
+        {"id": "5201108", "nome": "Abadia de Goiás"},
+        {"id": "5208707", "nome": "Goiânia"},
+    ]
+
+
+@pytest.mark.anyio
 async def test_prodes_route_requires_auth(test_client: AsyncClient):
     response = await test_client.get("/api/prodes/municipio/4205407")
     assert response.status_code == 401

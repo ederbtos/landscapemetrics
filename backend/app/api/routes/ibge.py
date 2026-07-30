@@ -13,10 +13,30 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ibge", tags=["ibge"])
 
+# Nomes das 27 UFs — dado estático (divisão federativa do Brasil não muda),
+# usado só para completar `list_ufs()` (que só tem as siglas presentes na
+# malha cacheada) sem precisar de uma chamada ao vivo.
+_UF_NAMES = {
+    "AC": "Acre", "AL": "Alagoas", "AP": "Amapá", "AM": "Amazonas", "BA": "Bahia",
+    "CE": "Ceará", "DF": "Distrito Federal", "ES": "Espírito Santo", "GO": "Goiás",
+    "MA": "Maranhão", "MT": "Mato Grosso", "MS": "Mato Grosso do Sul",
+    "MG": "Minas Gerais", "PA": "Pará", "PB": "Paraíba", "PR": "Paraná",
+    "PE": "Pernambuco", "PI": "Piauí", "RJ": "Rio de Janeiro",
+    "RN": "Rio Grande do Norte", "RS": "Rio Grande do Sul", "RO": "Rondônia",
+    "RR": "Roraima", "SC": "Santa Catarina", "SP": "São Paulo", "SE": "Sergipe",
+    "TO": "Tocantins",
+}
+
 
 @router.get("/ufs")
 def get_ufs():
-    """Retorna a lista de UFs (estados) do Brasil via API do IBGE."""
+    """Lista de UFs (estados) do Brasil — checa o cache nacional
+    (`municipios_malha`, ver `scripts/seed_municipios_malha.py`) primeiro; só
+    cai na chamada ao vivo à API do IBGE se o cache ainda estiver vazio."""
+    cached_ufs = municipios_db.list_ufs()
+    if cached_ufs:
+        return [{"sigla": uf, "nome": _UF_NAMES.get(uf, uf)} for uf in cached_ufs]
+
     try:
         res = requests.get("https://servicodados.ibge.gov.br/api/v1/localidades/estados?ordenacao=nome", timeout=10)
         res.raise_for_status()
@@ -29,7 +49,13 @@ def get_ufs():
 
 @router.get("/ufs/{uf}/municipios")
 def get_municipios(uf: str):
-    """Retorna os municípios de uma UF específica."""
+    """Municípios de uma UF — checa o cache nacional (`municipios_malha`)
+    primeiro; só cai na chamada ao vivo à API do IBGE se essa UF ainda não
+    estiver cacheada."""
+    cached = municipios_db.list_municipios_by_uf(uf)
+    if cached:
+        return [{"id": m["codigo_ibge"], "nome": m["nome"]} for m in cached]
+
     try:
         res = requests.get(f"https://servicodados.ibge.gov.br/api/v1/localidades/estados/{uf.upper()}/municipios", timeout=10)
         res.raise_for_status()

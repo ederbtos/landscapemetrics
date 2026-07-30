@@ -607,6 +607,23 @@ Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo pl
   finalizado — a trava só evita que ele vaze para produção sem querer, não substitui a remoção.
   Coberto por `tests/test_backend_config.py` (3 testes: recusa com cookie seguro, permite com
   cookie inseguro, permite sem bypass configurado).
+- **Lacuna fechada: `GET /api/ibge/ufs` e `/ufs/{uf}/municipios` passam a usar o cache primeiro
+  (2026-07-30)**: auditoria (pedida pelo usuário) de quais funcionalidades já liam do banco
+  nacional (Fase 10) vs. ainda chamavam APIs externas ao vivo encontrou essas duas rotas como única
+  lacuna — diferente de `GET /api/ibge/municipios/{codigo}/malha` (já cacheada desde a Fase 10),
+  os seletores UF→município da UI sempre batiam na API ao vivo do IBGE, mesmo com
+  `list_municipios_by_uf` já pronto em `db/municipios.py` sem uso. Corrigido: `list_ufs()` (novo em
+  `db/municipios.py`, `SELECT DISTINCT uf`) + um mapa estático de sigla→nome das 27 UFs (dado que
+  não muda, não é "inventar dado") alimentam `/ufs`; `/ufs/{uf}/municipios` usa
+  `list_municipios_by_uf` diretamente. Os dois só caem na chamada ao vivo ao IBGE se o cache
+  ainda estiver vazio (mesmo padrão "cache primeiro, live como rede de segurança" da rota de malha)
+  — hoje, com a malha 100% seedada, esse fallback não deve mais ser exercitado em uso normal.
+  Confirmado nesta mesma auditoria: PRODES, MapBiomas (série agregada) e ANA já liam só do banco;
+  o cálculo de métricas via MapBiomas/Earth Engine, a predição de Markov (fonte do dado é sempre o
+  GeoTIFF do usuário) e o lote por município via shapefile continuam corretamente ao vivo/fora do
+  escopo do cache (não são dados agregados nacionais). Coberto por 2 novos testes em
+  `tests/test_backend_api_routes.py` (cache usado, chamada ao vivo bloqueada via `monkeypatch` que
+  falha o teste se for chamada). Suíte completa: **118 testes passando**.
 
 ### Fase 4 — Deploy
 
