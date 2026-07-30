@@ -1,14 +1,11 @@
 """
 Serviço de cálculo real de métricas de paisagem para a API FastAPI.
 
-Reaproveita as funções puras já implementadas e testadas em `landscape_core.py`
-(extração MapBiomas/GeoTIFF, PyLandStats, malha municipal do IBGE) em vez de
-duplicá-las — mesmo padrão já usado por `api/routes/sse.py`/`supervised.py`
-(que reaproveitam `clustering.py`/`supervised_models.py` via importlib).
-`landscape_core.py` não depende do Streamlit (extraído de `app.py` para esse
-fim exato), então este serviço importa direto dele em vez de `app.py`
-(que ainda faz `import streamlit` no topo e não é uma dependência do
-backend — ver `backend/requirements.txt`).
+Reaproveita as funções puras já implementadas e testadas em
+`app.services.landscape_core` (extração MapBiomas/GeoTIFF, PyLandStats, malha
+municipal do IBGE) em vez de duplicá-las — mesmo padrão já usado por
+`api/routes/sse.py`/`supervised.py` (que reaproveitam `clustering`/
+`supervised_models`, também em `app.services`).
 
 Antes deste módulo, `POST /api/metrics/calculate` retornava sempre os mesmos
 números fixos, independente do ponto/município/arquivo enviado — este
@@ -16,26 +13,14 @@ serviço substitui o stub pela extração/cálculo real, preservando a mesma
 regra de negócio do app original: nenhuma métrica é gerada sem dados reais
 por trás (falha explícita em vez de dado fabricado).
 """
-import importlib
 import json
-import sys
-from pathlib import Path
 from typing import Optional
 
 import ee
 import numpy as np
 
 from app.db import municipios as municipios_db
-
-
-def _load_legacy_module(module_name: str):
-    root_dir = Path(__file__).resolve().parents[3]
-    if str(root_dir) not in sys.path:
-        sys.path.insert(0, str(root_dir))
-    return importlib.import_module(module_name)
-
-
-landscape_core = _load_legacy_module("landscape_core")
+from app.services import landscape_core
 
 
 class LandscapeAnalysisError(RuntimeError):
@@ -61,8 +46,9 @@ class _UploadedFileAdapter:
 
 
 def initialize_earth_engine(credentials: dict) -> None:
-    """Equivalente a `app.initialize_ee`, sem acoplamento ao Streamlit —
-    levanta `LandscapeAnalysisError` em vez de chamar st.error/st.success."""
+    """Inicializa o Earth Engine com a credencial de conta de serviço do
+    usuário — levanta `LandscapeAnalysisError` (mensagem pronta para exibir)
+    em vez de propagar a exceção crua do SDK."""
     try:
         service_account = credentials.get("client_email")
         ee_credentials = ee.ServiceAccountCredentials(

@@ -24,30 +24,3 @@ os.environ["PROJ_LIB"] = str(Path(rasterio.__file__).parent / "proj_data")
 os.environ["PROJ_DATA"] = os.environ["PROJ_LIB"]
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import pytest
-import streamlit as st
-from cryptography.fernet import Fernet
-
-
-@pytest.fixture
-def fake_secrets(monkeypatch):
-    """Segredos fictícios (nunca reais) para os testes de auth.py/db.py —
-    substitui st.secrets inteiro para não depender de um secrets.toml local."""
-    secrets = {
-        "jwt_secret_key": "test-jwt-secret-nao-usar-em-producao",
-        "app_encryption_key": Fernet.generate_key().decode(),
-    }
-    monkeypatch.setattr(st, "secrets", secrets)
-    return secrets
-
-
-@pytest.fixture
-def temp_db(tmp_path, monkeypatch):
-    """Banco SQLite isolado por teste — nunca toca em data/app.db real."""
-    import db
-
-    db_path = tmp_path / "test_app.db"
-    monkeypatch.setattr(db, "DB_PATH", str(db_path))
-    db.init_db()
-    return db

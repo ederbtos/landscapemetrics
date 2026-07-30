@@ -1,11 +1,10 @@
 """
 Descrição da funcionalidade
 ---------------------------
-Emissão/validação de sessão (substitui `auth.py::_create_token/_decode_token`
-do app Streamlit) e hashing de senha (bcrypt, reaproveitado sem mudanças de
-`db.py`). Resolve o problema documentado em ROADMAP.md ("Bloqueio conhecido":
-sessão não sobrevivia a um F5 por viver só em `st.session_state`, sem
-cookie) — ver `refresh_token_*` abaixo.
+Emissão/validação de sessão (JWT + refresh token) e hashing de senha
+(bcrypt). Resolve o problema documentado em ROADMAP.md ("Bloqueio conhecido":
+sessão não sobrevivia a um F5) via refresh token em cookie httpOnly — ver
+`refresh_token_*` abaixo.
 
 Contexto técnico
 -----------------

@@ -39,6 +39,8 @@ from rasterio.mask import mask as rio_mask
 from rasterio.warp import calculate_default_transform, reproject
 from rasterio.windows import Window, from_bounds
 from rasterio.windows import transform as window_transform
+from scipy.linalg import fractional_matrix_power
+from scipy.ndimage import zoom as ndimage_zoom
 from shapely.geometry import Point, mapping, shape
 from shapely.ops import transform as shapely_transform
 
@@ -713,3 +715,137 @@ def _ibge_get_municipio_geojson(codigo: str) -> dict | None:
     if not geojson.get("features"):
         return None
     return geojson
+
+
+def _build_transition_matrix(class_arrays: list, years: list) -> "pd.DataFrame":
+    """Constrói a matriz de transição de probabilidade (classe origem ×
+    classe destino) a partir de uma série de arrays de classe — base da
+    predição de anos futuros (`_project_future_landcover`, cadeia de
+    Markov). Soma as transições pixel-a-pixel de TODOS os pares de anos
+    consecutivos disponíveis (não só o primeiro/último), para aproveitar
+    toda a série.
+
+    Se dois arrays consecutivos tiverem shapes diferentes (arquivos de
+    resoluções/extents ligeiramente diferentes entre si), o array mais
+    recente do par é reamostrado por nearest-neighbor
+    (`scipy.ndimage.zoom`, ordem 0 — dado categórico, nunca interpolado)
+    para o shape do array anterior antes de comparar — aproximação
+    necessária para alinhar pixel-a-pixel, documentada aqui para quem for
+    interpretar o resultado."""
+    order = np.argsort(years)
+    arrays_sorted = [class_arrays[i] for i in order]
+
+    all_classes = sorted({int(c) for arr in arrays_sorted for c in np.unique(arr)})
+    counts = pd.DataFrame(0.0, index=all_classes, columns=all_classes)
+
+    for arr_before, arr_after in zip(arrays_sorted[:-1], arrays_sorted[1:]):
+        if arr_before.shape != arr_after.shape:
+            zoom_factors = (
+                arr_before.shape[0] / arr_after.shape[0],
+                arr_before.shape[1] / arr_after.shape[1],
+            )
+            arr_after = ndimage_zoom(arr_after, zoom_factors, order=0)
+            min_rows = min(arr_before.shape[0], arr_after.shape[0])
+            min_cols = min(arr_before.shape[1], arr_after.shape[1])
+            arr_before_cmp = arr_before[:min_rows, :min_cols]
+            arr_after_cmp = arr_after[:min_rows, :min_cols]
+        else:
+            arr_before_cmp, arr_after_cmp = arr_before, arr_after
+
+        pair_counts = pd.crosstab(arr_before_cmp.ravel(), arr_after_cmp.ravel())
+        counts = counts.add(pair_counts, fill_value=0.0)
+
+    counts = counts.reindex(index=all_classes, columns=all_classes, fill_value=0.0)
+    row_sums = counts.sum(axis=1)
+    transition = counts.div(row_sums, axis=0)
+
+    # Linhas sem nenhuma transição observada (classe nunca apareceu como
+    # "origem" em nenhum par de anos): assume identidade (sem mudança) como
+    # fallback conservador — evita NaN, que quebraria a soma de
+    # probabilidade = 1 exigida pela projeção via matriz.
+    for cls in counts.index[row_sums == 0]:
+        transition.loc[cls, cls] = 1.0
+    return transition.fillna(0.0)
+
+
+def _project_future_landcover(
+    transition_df: "pd.DataFrame", last_year: int, last_proportions: "pd.Series",
+    avg_interval: float, target_years: list,
+) -> "pd.DataFrame":
+    """Projeta a proporção de cada classe para os `target_years` informados,
+    usando a cadeia de Markov definida por `transition_df` (ver
+    `_build_transition_matrix`). `avg_interval` é o intervalo médio (anos)
+    entre as observações usadas para construir a matriz — define o
+    "tamanho do passo" de uma aplicação dela. Para anos-alvo que não caem
+    num múltiplo exato desse intervalo, usa potência fracionária da matriz
+    (`scipy.linalg.fractional_matrix_power`) — pode gerar pequenos
+    artefatos numéricos (proporções levemente negativas ou passando de
+    100%), por isso o resultado é sempre clampado a >= 0 e renormalizado
+    para somar 100%.
+
+    Método não-espacial: projeta só a distribuição agregada de classes, não
+    um mapa futuro — assume estacionariedade das probabilidades de
+    transição observadas no período histórico disponível."""
+    classes = list(transition_df.index)
+    transition_matrix = transition_df.reindex(index=classes, columns=classes, fill_value=0.0).to_numpy()
+    v0 = np.array([last_proportions.get(c, 0.0) for c in classes])
+
+    rows = []
+    for target_year in target_years:
+        n_steps = (target_year - last_year) / avg_interval
+        if n_steps <= 0:
+            continue
+        try:
+            step_matrix = np.real(fractional_matrix_power(transition_matrix, n_steps))
+        except Exception as power_error:
+            logger.warning(f"fractional_matrix_power falhou ({power_error}); usando potência inteira mais próxima.")
+            step_matrix = np.linalg.matrix_power(transition_matrix, max(round(n_steps), 1))
+        projected = np.clip(v0 @ step_matrix, 0.0, None)
+        total = projected.sum()
+        if total > 0:
+            projected = projected / total * 100
+        rows.append([target_year, *projected])
+
+    return pd.DataFrame(rows, columns=["ano", *classes]).set_index("ano")
+
+
+# Nomes de coluna mais comuns nas malhas municipais do IBGE (varia entre
+# publicações/anos) — usados por `_detect_municipio_columns` para
+# pré-selecionar código/nome/UF no upload de shapefile de municípios
+# (Métricas por município em lote), sempre editável pelo usuário na UI caso
+# a detecção erre ou o shapefile venha de outra fonte.
+MUNICIPIO_CODE_COL_CANDIDATES = ["CD_MUN", "CD_GEOCMU", "GEOCODIGO", "CD_GEOCODM", "CD_MUNICIP", "GEOCOD_MUN"]
+MUNICIPIO_NAME_COL_CANDIDATES = ["NM_MUN", "NM_MUNICIP", "NM_MUNICIPIO", "NOME"]
+MUNICIPIO_UF_COL_CANDIDATES = ["SIGLA_UF", "UF", "SIGLA"]
+
+
+def _detect_municipio_columns(gdf) -> dict:
+    """Tenta identificar, por nome (case-insensitive), quais colunas do
+    shapefile de municípios enviado pelo usuário trazem o código IBGE, o
+    nome e a UF de cada município — shapefiles de fontes/anos diferentes da
+    malha do IBGE usam nomes de coluna diferentes, então isso é só um ponto
+    de partida, sempre editável pelo chamador.
+
+    Retorna `{"codigo": nome_da_coluna_ou_None, "nome": ..., "uf": ...}`.
+
+    Nota: parte de um trio de funções (`_municipio_files_to_gdf`,
+    `_run_municipio_batch`, `_build_municipio_batch_workbook`) que compunham
+    o recurso "Métricas por município em lote" só em app.py (Streamlit,
+    removido) — essa é a única das quatro sem dependência de
+    `uploaded_file_to_gdf`/persistência, por isso foi a única portada nesta
+    migração. As outras três (e o recurso completo) ficam descobertas — ver
+    ROADMAP.md."""
+    columns_by_lower = {str(col).lower(): col for col in gdf.columns}
+
+    def _find(candidates):
+        for candidate in candidates:
+            match = columns_by_lower.get(candidate.lower())
+            if match is not None:
+                return match
+        return None
+
+    return {
+        "codigo": _find(MUNICIPIO_CODE_COL_CANDIDATES),
+        "nome": _find(MUNICIPIO_NAME_COL_CANDIDATES),
+        "uf": _find(MUNICIPIO_UF_COL_CANDIDATES),
+    }

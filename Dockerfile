@@ -1,3 +1,12 @@
+# Compila o frontend TypeScript (frontend-src/) para static/app.js — ver
+# tsconfig.json ("outFile"). Estágio isolado: Node nunca entra na imagem
+# final, só o static/app.js já compilado.
+FROM node:20-slim AS frontend-build
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.json ./
+COPY frontend-src ./frontend-src
+RUN mkdir -p static && npm ci && npm run build
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -19,11 +28,7 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r /tmp/requirements
 
 COPY backend /app/backend
 COPY static /app/static
-# Módulos legados na raiz do repo, reaproveitados via importlib/import direto
-# por backend/app/services/landscape.py, backend/app/api/routes/sse.py|
-# supervised.py|user.py (ver docstrings desses arquivos) — não confundir com
-# app.py/auth.py, que dependem do Streamlit e não são usados pelo backend.
-COPY landscape_core.py clustering.py supervised_models.py db.py ./
+COPY --from=frontend-build /app/static/app.js /app/static/app.js
 
 EXPOSE 8000
 

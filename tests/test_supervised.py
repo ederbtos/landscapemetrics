@@ -1,11 +1,18 @@
 """
 Testes unitários para o módulo de Aprendizado Supervisionado (supervised_models.py)
 """
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from supervised_models import (
+BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.services.supervised_models import (
     get_spatial_groups,
     prepare_supervised_data,
     train_supervised_model,

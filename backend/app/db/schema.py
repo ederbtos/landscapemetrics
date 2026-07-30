@@ -108,6 +108,21 @@ def init_db() -> None:
             ON refresh_tokens(user_email)
             """
         )
+        # Preferências do Escritório Virtual (Fase 8) — só era criada por
+        # `db.py::init_db()` (Streamlit legado), nunca por este init_db do
+        # backend. Em `data/app.db` já existente isso passava despercebido
+        # (a tabela já estava lá desde o app antigo); um deploy do zero só
+        # com o backend nunca a criava, quebrando `GET/POST /api/user/settings`
+        # e a exclusão de conta da LGPD (`legacy_db.delete_user_settings`).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_email TEXT PRIMARY KEY,
+                settings_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
 
     # Dados de referência nacionais (malha municipal/MapBiomas/PRODES/ANA) —

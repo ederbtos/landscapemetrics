@@ -1,11 +1,8 @@
 """
 Rota para a Matriz Socioecológica (SSE) e Agrupamento Multivariado (K-Means e DBSCAN)
 """
-import importlib
 import io
 import json
-import sys
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,24 +12,24 @@ import pandas as pd
 
 from app.api.deps import get_current_user
 from app.db import metric_results as metric_results_db
-
-
-def _load_legacy_module(module_name: str):
-    # backend/app/api/routes/sse.py -> parents[4] é a raiz do repo (uma
-    # camada mais fundo que backend/app/services/landscape.py, que usa
-    # parents[3] pelo mesmo motivo). Só "funcionava" antes por acidente: como
-    # metrics.py roda primeiro em main.py e insere o caminho certo, o
-    # root_dir errado calculado aqui nunca chegava a ser de fato necessário.
-    root_dir = Path(__file__).resolve().parents[4]
-    if str(root_dir) not in sys.path:
-        sys.path.insert(0, str(root_dir))
-    return importlib.import_module(module_name)
-
-
-clustering = _load_legacy_module("clustering")
+from app.services import clustering
 
 
 def _build_sse_matrix(user_email: str) -> pd.DataFrame:
+    """Monta a base da matriz socioecológica (SSE): uma linha por análise já
+    salva do usuário, colunas = proporção de área por classe de cobertura do
+    solo (wide, `pct_{classe}`) + métricas de nível de paisagem
+    (`landscape_{nome}`) + identificação. Só usa o que já está persistido —
+    não recalcula nada.
+
+    Regressão corrigida: a versão anterior iterava `class_metrics.columns`
+    (nomes de MÉTRICA, ex. "total_area"/"proportion_of_landscape") e pegava
+    só `.iloc[0]` (a primeira linha) — para qualquer análise com mais de uma
+    classe presente (o caso normal), isso descartava silenciosamente todas
+    as classes menos a primeira, sem gerar coluna nenhuma por classe. O
+    correto é pivotar a coluna `proportion_of_landscape` (cujo índice são os
+    nomes de classe) em uma coluna `pct_{classe}` por linha — mesma lógica
+    de antes da migração para o backend (app.py, removido)."""
     history = metric_results_db.list_metric_results(user_email, full=True)
     if not history:
         return pd.DataFrame()
@@ -45,7 +42,9 @@ def _build_sse_matrix(user_email: str) -> pd.DataFrame:
             continue
         landscape_metrics = json.loads(item.get("landscape_metrics_json", "{}")) if item.get("landscape_metrics_json") else {}
         row = {"label": item.get("label"), "data_source": item.get("data_source")}
-        row.update({col: float(class_metrics[col].iloc[0]) if col in class_metrics.columns else 0.0 for col in class_metrics.columns})
+        if "proportion_of_landscape" in class_metrics.columns:
+            for cls_name, value in class_metrics["proportion_of_landscape"].items():
+                row[f"pct_{cls_name}"] = value
         if isinstance(landscape_metrics, dict):
             row.update({f"landscape_{k}": v for k, v in landscape_metrics.items()})
         row.update({
@@ -58,7 +57,16 @@ def _build_sse_matrix(user_email: str) -> pd.DataFrame:
             "ano": item.get("ano"),
         })
         rows.append(row)
-    return pd.DataFrame(rows)
+
+    matrix = pd.DataFrame(rows)
+    # Colunas pct_* ausentes numa linha significam "classe não presente
+    # nessa análise" (0%), não um dado faltante — só essas colunas levam
+    # fillna(0); o resto (município, ano, métricas de paisagem) fica NaN de
+    # propósito quando ausente.
+    pct_cols = [c for c in matrix.columns if c.startswith("pct_")]
+    if pct_cols:
+        matrix[pct_cols] = matrix[pct_cols].fillna(0.0)
+    return matrix
 
 router = APIRouter(prefix="/api/sse", tags=["sse"])
 

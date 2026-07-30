@@ -1,17 +1,29 @@
 """
-Testes dos helpers de integração com a API do IBGE (localidades/malhas/
-agregados) e da área de interesse municipal em extract_landscape_from_tif —
-ver "Área de interesse por município (IBGE)" no ROADMAP.md.
+Testes de `_ibge_get_municipio_geojson`/`_municipio_geometry_shapely`/
+`extract_landscape_from_tif` (recorte por região municipal) em
+`backend/app/services/landscape_core.py` — ver "Área de interesse por
+município (IBGE)" no ROADMAP.md.
 
-Nota sobre cache: os helpers `_ibge_get_*` são decorados com @st.cache_data
-(mesmo motivo de uploaded_file_to_gdf, ver test_app_validation.py) — os
-testes chamam `.__wrapped__` para acessar a função original sem cache.
+Portadas de `tests/test_app_ibge.py` (app.py Streamlit, removido). As demais
+funções que esse arquivo testava (`_ibge_get_ufs`/`_ibge_get_municipios`/
+`_ibge_get_populacao_estimada`) só existiam no app.py e já tinham sido
+superadas por `backend/app/api/routes/ibge.py` (implementação própria, sem
+reaproveitar essas funções) — cobertas agora em
+`tests/test_backend_api_routes.py` (`test_ibge_municipios_route`,
+`test_ibge_populacao_route_*`).
 """
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 import requests
 
-import app
+BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.services import landscape_core
 from tests.helpers import FakeUploadedFile, make_test_tif
 
 
@@ -26,24 +38,6 @@ class _FakeResponse:
 
     def json(self):
         return self._json_data
-
-
-def test_ibge_get_ufs_returns_parsed_list(monkeypatch):
-    fake_ufs = [{"id": 52, "sigla": "GO", "nome": "Goiás"}]
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(fake_ufs))
-
-    result = app._ibge_get_ufs.__wrapped__()
-
-    assert result == fake_ufs
-
-
-def test_ibge_get_municipios_returns_parsed_list(monkeypatch):
-    fake_municipios = [{"id": 5208707, "nome": "Goiânia"}]
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(fake_municipios))
-
-    result = app._ibge_get_municipios.__wrapped__("GO")
-
-    assert result == fake_municipios
 
 
 def _municipio_polygon_geojson():
@@ -67,7 +61,7 @@ def test_ibge_get_municipio_geojson_returns_feature_collection(monkeypatch):
     fake_geojson = _municipio_polygon_geojson()
     monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(fake_geojson))
 
-    result = app._ibge_get_municipio_geojson.__wrapped__("5208707")
+    result = landscape_core._ibge_get_municipio_geojson.__wrapped__("5208707")
 
     assert result == fake_geojson
 
@@ -78,46 +72,18 @@ def test_ibge_get_municipio_geojson_returns_none_on_request_failure(monkeypatch)
 
     monkeypatch.setattr(requests, "get", _raise)
 
-    assert app._ibge_get_municipio_geojson.__wrapped__("5208707") is None
+    assert landscape_core._ibge_get_municipio_geojson.__wrapped__("5208707") is None
 
 
 def test_ibge_get_municipio_geojson_returns_none_when_no_features(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse({"type": "FeatureCollection", "features": []}))
 
-    assert app._ibge_get_municipio_geojson.__wrapped__("0000000") is None
-
-
-def test_ibge_get_populacao_estimada_parses_sidra_response(monkeypatch):
-    fake_sidra = [{
-        "resultados": [{
-            "series": [{
-                "serie": {"2024": "1536097"},
-            }],
-        }],
-    }]
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(fake_sidra))
-
-    assert app._ibge_get_populacao_estimada.__wrapped__("5208707") == 1536097
-
-
-def test_ibge_get_populacao_estimada_returns_none_on_unexpected_format(monkeypatch):
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse({"unexpected": "shape"}))
-
-    assert app._ibge_get_populacao_estimada.__wrapped__("5208707") is None
-
-
-def test_ibge_get_populacao_estimada_returns_none_on_request_failure(monkeypatch):
-    def _raise(*a, **k):
-        raise requests.Timeout("demorou demais")
-
-    monkeypatch.setattr(requests, "get", _raise)
-
-    assert app._ibge_get_populacao_estimada.__wrapped__("5208707") is None
+    assert landscape_core._ibge_get_municipio_geojson.__wrapped__("0000000") is None
 
 
 def test_municipio_geometry_shapely_extracts_single_feature_geometry():
     geojson = _municipio_polygon_geojson()
-    geom = app._municipio_geometry_shapely(geojson)
+    geom = landscape_core._municipio_geometry_shapely(geojson)
 
     assert geom.geom_type == "Polygon"
     minx, miny, maxx, maxy = geom.bounds
@@ -149,7 +115,7 @@ def test_extract_landscape_from_tif_crops_by_region_geojson():
         }],
     }
 
-    array, resolution, reprojected_bytes = app.extract_landscape_from_tif(
+    array, resolution, reprojected_bytes = landscape_core.extract_landscape_from_tif(
         fake, region_geojson=region_geojson,
     )
 
@@ -183,7 +149,7 @@ def test_extract_landscape_from_tif_region_geojson_geographic_crs_is_reprojected
         }],
     }
 
-    array, resolution, reprojected_bytes = app.extract_landscape_from_tif(
+    array, resolution, reprojected_bytes = landscape_core.extract_landscape_from_tif(
         fake, region_geojson=region_geojson,
     )
 
@@ -191,7 +157,7 @@ def test_extract_landscape_from_tif_region_geojson_geographic_crs_is_reprojected
     assert 3 in np.unique(array)
     assert resolution[0] > 1  # reprojetado de graus para metros
     assert reprojected_bytes is not None
-    with app.rasterio.io.MemoryFile(reprojected_bytes).open() as ds:
+    with landscape_core.rasterio.io.MemoryFile(reprojected_bytes).open() as ds:
         assert ds.crs.is_projected
 
 
@@ -216,4 +182,4 @@ def test_extract_landscape_from_tif_region_outside_raster_raises():
     }
 
     with pytest.raises(ValueError):
-        app.extract_landscape_from_tif(fake, region_geojson=region_geojson)
+        landscape_core.extract_landscape_from_tif(fake, region_geojson=region_geojson)

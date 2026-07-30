@@ -1,10 +1,9 @@
 """
 Descrição da funcionalidade
 ---------------------------
-Dependências compartilhadas do FastAPI — equivalente ao gate de login que
-`main()` fazia no topo do script Streamlit (`auth.is_logged_in()` +
-`st.stop()`). Aqui vira uma `Depends(get_current_user)` reutilizável em toda
-rota autenticada, lendo o access token do header `Authorization: Bearer`.
+Dependências compartilhadas do FastAPI — o gate de login vira uma
+`Depends(get_current_user)` reutilizável em toda rota autenticada, lendo o
+access token do header `Authorization: Bearer`.
 """
 from fastapi import Header, HTTPException, status
 

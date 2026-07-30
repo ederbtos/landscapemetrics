@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 ROOT_DIR = Path(__file__).resolve().parents[1]  # backend/ — para `import app.api.routes...`
-PROJECT_ROOT = ROOT_DIR.parent  # raiz do repo — onde vivem static/, app.py, clustering.py etc.
+PROJECT_ROOT = ROOT_DIR.parent  # raiz do repo — onde vive static/
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 

@@ -1,19 +1,15 @@
 """
 Descrição da funcionalidade
 ---------------------------
-Configuração central do backend (equivalente ao antigo `.streamlit/secrets.toml`
-lido via `st.secrets`). Resolve o mesmo problema de negócio de antes: manter
-segredos (chaves JWT, chave de criptografia Fernet, credenciais OAuth do
-Google) fora do código-fonte, agora via variáveis de ambiente (padrão para uma
-API FastAPI/Docker) em vez de um arquivo TOML lido pelo runtime do Streamlit.
+Configuração central do backend: segredos (chaves JWT, chave de criptografia
+Fernet, credenciais OAuth do Google) fora do código-fonte, via variáveis de
+ambiente (padrão para uma API FastAPI/Docker).
 
 Contexto técnico
 -----------------
 `pydantic-settings` lê de variáveis de ambiente (e opcionalmente de um `.env`
-local em desenvolvimento). `DB_PATH` mantém o mesmo default relativo
-(`data/app.db`) que `db.py` usava, para que o banco SQLite existente
-(`data/app.db`, com usuários/credenciais/histórico reais) continue sendo lido
-sem qualquer migração.
+local em desenvolvimento). `db_path` aponta para o SQLite existente em
+`data/app.db` (usuários/credenciais/histórico reais).
 """
 from functools import lru_cache
 
@@ -30,7 +26,14 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
 
-    app_encryption_key: str = "dGVzdF9rZXlfZGV2X29ubHlfZm9yX2xvY2FsX3VzZV8xMjM0NQ=="
+    # Precisa ser uma chave Fernet válida (32 bytes raw, base64 url-safe) —
+    # o placeholder anterior era só texto legível em base64 e derrubava
+    # save/get_credentials com "Fernet key must be 32 url-safe
+    # base64-encoded bytes" na primeira vez que alguém esquecesse de
+    # configurar um valor real em produção, em vez de um erro claro sobre a
+    # causa. Continua inseguro como default (mesmo espírito de
+    # jwt_secret_key acima) — troque sempre em produção.
+    app_encryption_key: str = "3zW1kQhX8pL0mN2vB5tR7yF9cA4dE6gH1jK3nP5qS8w="
 
     cors_origins: list[str] = ["http://localhost:5173"]
 

@@ -20,12 +20,15 @@ def _sample_geojson():
 
 @pytest.fixture
 async def test_client(tmp_path, monkeypatch):
+    from cryptography.fernet import Fernet
+
     monkeypatch.setenv("DB_PATH", str(tmp_path / "backend_test.db"))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-change-me")
-    monkeypatch.setenv(
-        "APP_ENCRYPTION_KEY",
-        "dGVzdF9rZXlfZGV2X29ubHlfZm9yX2xvY2FsX3VzZV8xMjM0NQ==",
-    )
+    # Precisa ser uma chave Fernet válida de verdade (32 bytes raw, base64
+    # url-safe) — o valor legível usado aqui antes NÃO era válido e derrubava
+    # qualquer teste que de fato chamasse save/get_credentials com
+    # ValueError("Fernet key must be 32 url-safe base64-encoded bytes.").
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode())
 
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
@@ -82,6 +85,68 @@ async def test_ibge_ufs_route(monkeypatch, test_client: AsyncClient):
         {"sigla": "SC", "nome": "Santa Catarina"},
         {"sigla": "SP", "nome": "São Paulo"},
     ]
+
+
+@pytest.mark.anyio
+async def test_ibge_municipios_route(monkeypatch, test_client: AsyncClient):
+    """Regressão: até esta sessão só `/api/ibge/ufs` e `/malha` tinham teste
+    próprio — `/ufs/{uf}/municipios` e `/populacao` (abaixo) nunca tinham sido
+    testados diretamente (a cobertura equivalente vivia só em `test_app_ibge.py`,
+    que testava as funções homônimas do `app.py` Streamlit, já superadas por
+    este router e removidas nesta migração)."""
+    import app.api.routes.ibge as ibge_routes
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [
+                {"id": 5208707, "nome": "Goiânia"},
+                {"id": 5201108, "nome": "Abadia de Goiás"},
+            ]
+
+    monkeypatch.setattr(ibge_routes.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    response = await test_client.get("/api/ibge/ufs/GO/municipios")
+    assert response.status_code == 200
+    # Ordenado por nome, não pela ordem retornada pela API.
+    assert response.json() == [
+        {"id": "5201108", "nome": "Abadia de Goiás"},
+        {"id": "5208707", "nome": "Goiânia"},
+    ]
+
+
+@pytest.mark.anyio
+async def test_ibge_populacao_route_returns_parsed_value(monkeypatch, test_client: AsyncClient):
+    import app.api.routes.ibge as ibge_routes
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{"resultados": [{"series": [{"series": {"2021": "1536097"}}]}]}]
+
+    monkeypatch.setattr(ibge_routes.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    response = await test_client.get("/api/ibge/municipios/5208707/populacao")
+    assert response.status_code == 200
+    assert response.json() == {"municipio_codigo": "5208707", "populacao_estimada": 1536097}
+
+
+@pytest.mark.anyio
+async def test_ibge_populacao_route_returns_none_on_failure(monkeypatch, test_client: AsyncClient):
+    import app.api.routes.ibge as ibge_routes
+
+    def _raise(*args, **kwargs):
+        raise ConnectionError("sem rede")
+
+    monkeypatch.setattr(ibge_routes.requests, "get", _raise)
+
+    response = await test_client.get("/api/ibge/municipios/5208707/populacao")
+    assert response.status_code == 200
+    assert response.json() == {"municipio_codigo": "5208707", "populacao_estimada": None}
 
 
 @pytest.mark.anyio
@@ -223,3 +288,46 @@ async def test_ana_routes_return_data_with_valid_token(monkeypatch, test_client:
             }
         ],
     }
+
+
+@pytest.mark.anyio
+async def test_lgpd_delete_account_removes_all_user_data(test_client: AsyncClient):
+    """Regressão: `DELETE /api/lgpd/account` chamava `credentials_db.delete_credentials`
+    e `users_db.delete_user`, nenhuma das quais existia — quebrava com
+    `AttributeError`/500 em qualquer tentativa real de exclusão de conta (Art.
+    18, VI da LGPD). Também cobre as duas lacunas que só apareceram depois de
+    corrigir isso: refresh token não revogado e `user_settings` não limpo."""
+    from app.db import credentials as credentials_db
+    from app.db import user_settings as user_settings_db
+    from app.db import users as users_db
+
+    email = "delete-me@example.com"
+    token = (
+        await test_client.post(
+            "/api/auth/register",
+            json={"email": email, "password": "secret123", "password_confirm": "secret123"},
+        )
+    ).json()["access_token"]
+
+    credentials_db.save_credentials(email, {"client_email": "svc@example.com"})
+    user_settings_db.save_user_settings(email, {"default_uf": "SC"})
+    assert users_db.user_exists(email) is True
+
+    response = await test_client.delete("/api/lgpd/account", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    assert response.json()["protocolo_exclusao"].startswith("LGPD-DEL-")
+
+    assert users_db.user_exists(email) is False
+    assert credentials_db.get_credentials(email) is None
+    # Sem uma linha própria, get_user_settings recai nos defaults de fábrica.
+    assert user_settings_db.get_user_settings(email)["default_uf"] == "GO"
+
+    # Refresh token revogado — a sessão não sobrevive à exclusão via F5.
+    refresh_response = await test_client.post("/api/auth/refresh")
+    assert refresh_response.status_code == 401
+
+    # Conta realmente eliminada, não só desconectada.
+    login_response = await test_client.post(
+        "/api/auth/login", json={"email": email, "password": "secret123"}
+    )
+    assert login_response.status_code == 401

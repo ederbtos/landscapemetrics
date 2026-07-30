@@ -1,0 +1,14 @@
+{
+  "name": "landscapemetrics-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Fonte TypeScript do frontend estático (compila para static/app.js) — ver frontend-src/.",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/leaflet": "^1.9.14"
+  }
+}

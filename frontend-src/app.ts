@@ -1,17 +1,39 @@
 /* ==========================================================================
-   Landscape Metrics Extractor - Frontend App Engine (TypeScript/JavaScript)
+   Landscape Metrics Extractor - Frontend App Engine (TypeScript)
+   Fonte em frontend-src/, compila para static/app.js (ver tsconfig.json).
+   Funções ficam no escopo global (module: "none") porque index.html/
+   landing.html chamam vários handlers inline via onclick=/onchange=/
+   onsubmit=/oninput= — não há <script type="module"> nem bundler aqui.
    ========================================================================== */
 
-let map, marker, circleBuffer;
-let selectedPoint = null;
+// Helper tipado para document.getElementById — assume que o elemento existe
+// (mesma premissa do app.js original), só evita repetir casts em toda parte.
+function $<T extends HTMLElement = HTMLElement>(id: string): T {
+  return document.getElementById(id) as T;
+}
+
+interface LatLngLike {
+  lat: number;
+  lng: number;
+}
+
+let map: L.Map;
+let marker: L.Marker | undefined;
+let circleBuffer: L.Circle | undefined;
+let selectedPoint: LatLngLike | null = null;
 let currentTab = 'tab-analise';
-let pcaChartInstance = null;
-let metricsChartInstance = null;
+let pcaChartInstance: any = null;
+let metricsChartInstance: any = null;
 
 // Estado do Tour do Avatar
-let selectedAvatar = 'maria_julia';
+type AvatarKey = 'maria_julia' | 'pedro';
+interface TourStep {
+  title: string;
+  text: string;
+}
+let selectedAvatar: AvatarKey = 'maria_julia';
 let currentTourStep = 0;
-const tourSteps = {
+const tourSteps: Record<AvatarKey, TourStep[]> = {
   maria_julia: [
     { title: "Boas-vindas da Maria Júlia! 🌿", text: "Olá! Sou a Maria Júlia, sua especialista em Ciências Ambientais. Vou te orientar no cálculo e interpretação das métricas de paisagem do MapBiomas!" },
     { title: "Área de Interesse 🗺️", text: "Na primeira seção, escolha um ponto de interesse com raio de buffer ou selecione os limites oficiais de um município do IBGE." },
@@ -27,11 +49,11 @@ const tourSteps = {
 };
 
 // Registro de PWA Service Worker e Prompt de Instalação
-let deferredPrompt;
-window.addEventListener('beforeinstallprompt', (e) => {
+let deferredPrompt: BeforeInstallPromptEvent | null = null;
+window.addEventListener('beforeinstallprompt', (e: Event) => {
   e.preventDefault();
-  deferredPrompt = e;
-  document.getElementById('pwa-banner').style.display = 'flex';
+  deferredPrompt = e as BeforeInstallPromptEvent;
+  $('pwa-banner').style.display = 'flex';
 });
 
 document.getElementById('pwa-install-btn')?.addEventListener('click', async () => {
@@ -39,7 +61,7 @@ document.getElementById('pwa-install-btn')?.addEventListener('click', async () =
     deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice;
     if (outcome === 'accepted') {
-      document.getElementById('pwa-banner').style.display = 'none';
+      $('pwa-banner').style.display = 'none';
     }
     deferredPrompt = null;
   }
@@ -60,16 +82,16 @@ document.addEventListener('DOMContentLoaded', () => {
   updateStepper();
 });
 
-let authMode = 'login'; // 'login' ou 'register'
+let authMode: 'login' | 'register' = 'login';
 
-function authHeaders() {
+function authHeaders(): Record<string, string> {
   return { 'Authorization': `Bearer ${localStorage.getItem('access_token')}` };
 }
 
 // Depois do redirect de /api/auth/google/callback, o access token chega no
 // fragmento da URL (#access_token=...&email=...) em vez de um fetch — ver
 // docstring de google_callback em backend/app/api/routes/auth.py.
-function _consumeGoogleRedirectFragment() {
+function _consumeGoogleRedirectFragment(): void {
   if (!window.location.hash.includes('access_token=')) return;
   const params = new URLSearchParams(window.location.hash.slice(1));
   const token = params.get('access_token');
@@ -85,7 +107,7 @@ function _consumeGoogleRedirectFragment() {
 // sem isso, um token expirado (15min, ver access_token_expire_minutes)
 // deixava a UI achando que a sessão seguia válida só por existir no
 // localStorage, mostrando a ferramenta com uma sessão na prática já morta.
-async function _isAccessTokenValid(token) {
+async function _isAccessTokenValid(token: string): Promise<boolean> {
   try {
     const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
     return res.ok;
@@ -98,7 +120,7 @@ async function _isAccessTokenValid(token) {
 // precisar logar de novo — o endpoint já existia em /api/auth/refresh, mas
 // nada no frontend o chamava (resolve de fato o "sessão não sobrevive a F5"
 // do ROADMAP.md).
-async function _tryRefreshAccessToken() {
+async function _tryRefreshAccessToken(): Promise<string | null> {
   try {
     const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'same-origin' });
     if (!res.ok) return null;
@@ -110,13 +132,13 @@ async function _tryRefreshAccessToken() {
   }
 }
 
-async function checkAuthSession() {
+async function checkAuthSession(): Promise<void> {
   _consumeGoogleRedirectFragment();
 
-  const container = document.getElementById('user-session-container');
-  const appShell = document.getElementById('app-shell');
+  const container = $('user-session-container');
+  const appShell = $('app-shell');
   let token = localStorage.getItem('access_token');
-  let userEmail = localStorage.getItem('user_email');
+  let userEmail: string | null = localStorage.getItem('user_email');
 
   if (token && !(await _isAccessTokenValid(token))) {
     token = await _tryRefreshAccessToken();
@@ -141,18 +163,18 @@ async function checkAuthSession() {
   }
 }
 
-async function loadGoogleLoginOption() {
+async function loadGoogleLoginOption(): Promise<void> {
   try {
     const res = await fetch('/api/auth/config');
     const data = await res.json();
-    document.getElementById('google-login-group').style.display = data.google_oauth_enabled ? 'block' : 'none';
+    $('google-login-group').style.display = data.google_oauth_enabled ? 'block' : 'none';
   } catch {
     // Sem conexão com a API ainda: mantém o botão do Google escondido em vez
     // de mostrar uma opção que pode não estar configurada.
   }
 }
 
-function requireAuth() {
+function requireAuth(): boolean {
   const token = localStorage.getItem('access_token');
   if (!token) {
     openAuthModal();
@@ -161,12 +183,12 @@ function requireAuth() {
   return true;
 }
 
-function openAuthModal() {
-  document.getElementById('auth-modal').style.display = 'flex';
+function openAuthModal(): void {
+  $('auth-modal').style.display = 'flex';
 }
 
-function showToast(message, type = 'success') {
-  const container = document.getElementById('toast-container');
+function showToast(message: string, type: 'success' | 'error' = 'success'): void {
+  const container = $('toast-container');
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
   toast.textContent = message;
@@ -174,27 +196,27 @@ function showToast(message, type = 'success') {
   setTimeout(() => toast.remove(), 3200);
 }
 
-function closeAuthModal() {
-  document.getElementById('auth-modal').style.display = 'none';
+function closeAuthModal(): void {
+  $('auth-modal').style.display = 'none';
 }
 
-function toggleAuthMode() {
+function toggleAuthMode(): void {
   authMode = authMode === 'login' ? 'register' : 'login';
   const isRegister = authMode === 'register';
-  document.getElementById('auth-modal-title').innerText = isRegister ? 'Criar Nova Conta 📝' : 'Acesso Restrito - Identifique-se 🔑';
-  document.getElementById('confirm-password-group').style.display = isRegister ? 'block' : 'none';
-  document.getElementById('btn-auth-submit').innerText = isRegister ? 'Cadastrar' : 'Entrar';
-  document.getElementById('auth-toggle-msg').innerText = isRegister ? 'Já possui uma conta?' : 'Não tem uma conta?';
-  document.getElementById('btn-toggle-auth').innerText = isRegister ? 'Fazer Login' : 'Cadastrar-se';
-  document.getElementById('auth-error-msg').style.display = 'none';
+  $('auth-modal-title').innerText = isRegister ? 'Criar Nova Conta 📝' : 'Acesso Restrito - Identifique-se 🔑';
+  $('confirm-password-group').style.display = isRegister ? 'block' : 'none';
+  $('btn-auth-submit').innerText = isRegister ? 'Cadastrar' : 'Entrar';
+  $('auth-toggle-msg').innerText = isRegister ? 'Já possui uma conta?' : 'Não tem uma conta?';
+  $('btn-toggle-auth').innerText = isRegister ? 'Fazer Login' : 'Cadastrar-se';
+  $('auth-error-msg').style.display = 'none';
 }
 
-async function handleAuthSubmit(event) {
+async function handleAuthSubmit(event: Event): Promise<void> {
   event.preventDefault();
-  const email = document.getElementById('auth-email').value;
-  const password = document.getElementById('auth-password').value;
-  const confirmPassword = document.getElementById('auth-password-confirm').value;
-  const errorMsg = document.getElementById('auth-error-msg');
+  const email = $<HTMLInputElement>('auth-email').value;
+  const password = $<HTMLInputElement>('auth-password').value;
+  const confirmPassword = $<HTMLInputElement>('auth-password-confirm').value;
+  const errorMsg = $('auth-error-msg');
 
   errorMsg.style.display = 'none';
 
@@ -219,13 +241,13 @@ async function handleAuthSubmit(event) {
     localStorage.setItem('access_token', data.access_token);
     localStorage.setItem('user_email', email);
     checkAuthSession();
-  } catch (err) {
+  } catch (err: any) {
     errorMsg.innerText = err.message;
     errorMsg.style.display = 'block';
   }
 }
 
-function logout() {
+function logout(): void {
   localStorage.removeItem('access_token');
   localStorage.removeItem('user_email');
   checkAuthSession();
@@ -233,7 +255,7 @@ function logout() {
 
 
 // Inicialização do Mapa Leaflet
-function initMap() {
+function initMap(): void {
   const mapElement = document.getElementById('map');
   if (!mapElement) return;
 
@@ -243,16 +265,16 @@ function initMap() {
     attribution: '© OpenStreetMap'
   }).addTo(map);
 
-  map.on('click', (e) => {
+  map.on('click', (e: L.LeafletMouseEvent) => {
     selectedPoint = e.latlng;
     updateMapMarker();
     updateStepper();
   });
 }
 
-function updateMapMarker() {
+function updateMapMarker(): void {
   if (!selectedPoint) return;
-  const dist = parseInt(document.getElementById('buffer-dist').value) || 5000;
+  const dist = parseInt($<HTMLInputElement>('buffer-dist').value) || 5000;
 
   if (marker) map.removeLayer(marker);
   if (circleBuffer) map.removeLayer(circleBuffer);
@@ -267,13 +289,13 @@ function updateMapMarker() {
 }
 
 // Alternar entre Abas da Aplicação
-function switchTab(evt, tabId) {
+function switchTab(evt: Event | null, tabId: string): void {
   currentTab = tabId;
-  document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
-  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll<HTMLElement>('.tab-content').forEach(el => el.style.display = 'none');
+  document.querySelectorAll<HTMLElement>('.tab-btn').forEach(el => el.classList.remove('active'));
 
-  document.getElementById(tabId).style.display = 'block';
-  if (evt && evt.currentTarget) evt.currentTarget.classList.add('active');
+  $(tabId).style.display = 'block';
+  if (evt && evt.currentTarget) (evt.currentTarget as HTMLElement).classList.add('active');
 
   if (tabId === 'tab-sse') {
     loadSseMatrix();
@@ -282,10 +304,10 @@ function switchTab(evt, tabId) {
 
 // Acessibilidade (Alto Contraste e Fonte) — preferências persistidas em
 // localStorage para sobreviver a reloads e à navegação entre landing/app.
-function setupAccessibility() {
-  const contrastBtn = document.getElementById('toggle-contrast');
-  const fontUpBtn = document.getElementById('font-size-up');
-  const fontDownBtn = document.getElementById('font-size-down');
+function setupAccessibility(): void {
+  const contrastBtn = $('toggle-contrast');
+  const fontUpBtn = $('font-size-up');
+  const fontDownBtn = $('font-size-down');
 
   if (localStorage.getItem('high_contrast') === '1') {
     document.body.classList.add('high-contrast');
@@ -313,28 +335,28 @@ function setupAccessibility() {
 }
 
 // Alternar Campos da Área de Interesse
-function toggleRoiInputs() {
-  const type = document.getElementById('roi-type').value;
-  document.getElementById('point-inputs').style.display = type === 'point' ? 'block' : 'none';
-  document.getElementById('municipio-inputs').style.display = type === 'municipio' ? 'block' : 'none';
+function toggleRoiInputs(): void {
+  const type = $<HTMLSelectElement>('roi-type').value;
+  $('point-inputs').style.display = type === 'point' ? 'block' : 'none';
+  $('municipio-inputs').style.display = type === 'municipio' ? 'block' : 'none';
   if (type === 'point' && map) setTimeout(() => map.invalidateSize(), 200);
 }
 
-function toggleTifUpload() {
-  const source = document.getElementById('data-source').value;
-  document.getElementById('geotiff-upload-group').style.display = source === 'geotiff' ? 'block' : 'none';
-  document.getElementById('gee-credentials-group').style.display = source === 'mapbiomas' ? 'block' : 'none';
+function toggleTifUpload(): void {
+  const source = $<HTMLSelectElement>('data-source').value;
+  $('geotiff-upload-group').style.display = source === 'geotiff' ? 'block' : 'none';
+  $('gee-credentials-group').style.display = source === 'mapbiomas' ? 'block' : 'none';
 }
 
 // API IBGE (Estados e Municípios)
-async function loadUfs() {
-  const select = document.getElementById('select-uf');
+async function loadUfs(): Promise<void> {
+  const select = $<HTMLSelectElement>('select-uf');
   try {
     const res = await fetch('https://servicodados.ibge.gov.br/api/v1/localidades/estados?ordenacao=nome');
     if (!res.ok) throw new Error('Resposta inválida da API do IBGE.');
     const ufs = await res.json();
     select.innerHTML = '<option value="">Selecione uma UF...</option>';
-    ufs.forEach(uf => {
+    ufs.forEach((uf: any) => {
       select.innerHTML += `<option value="${uf.sigla}">${uf.sigla} - ${uf.nome}</option>`;
     });
   } catch (err) {
@@ -344,9 +366,9 @@ async function loadUfs() {
   }
 }
 
-async function loadMunicipios() {
-  const uf = document.getElementById('select-uf').value;
-  const select = document.getElementById('select-municipio');
+async function loadMunicipios(): Promise<void> {
+  const uf = $<HTMLSelectElement>('select-uf').value;
+  const select = $<HTMLSelectElement>('select-municipio');
   if (!uf) return;
   select.innerHTML = '<option>Carregando municípios...</option>';
   try {
@@ -354,7 +376,7 @@ async function loadMunicipios() {
     if (!res.ok) throw new Error('Resposta inválida da API do IBGE.');
     const munis = await res.json();
     select.innerHTML = '';
-    munis.forEach(m => {
+    munis.forEach((m: any) => {
       select.innerHTML += `<option value="${m.id}">${m.nome}</option>`;
     });
   } catch (err) {
@@ -367,8 +389,8 @@ async function loadMunicipios() {
 // Credenciais do Earth Engine (obrigatórias para a fonte MapBiomas)
 let hasGeeCredentials = false;
 
-async function loadGeeCredentialsStatus() {
-  const statusEl = document.getElementById('gee-credentials-status');
+async function loadGeeCredentialsStatus(): Promise<void> {
+  const statusEl = $('gee-credentials-status');
   if (!localStorage.getItem('access_token')) {
     statusEl.textContent = 'Faça login para cadastrar sua credencial do Earth Engine.';
     return;
@@ -391,21 +413,21 @@ async function loadGeeCredentialsStatus() {
 // Stepper do passo a passo (dados iniciais + parametrização) — acende cada
 // passo conforme os campos exigidos por ele forem preenchidos, e só libera
 // o botão de calcular quando os passos 1 e 2 estiverem completos.
-function updateStepper() {
-  const roiType = document.getElementById('roi-type').value;
+function updateStepper(): void {
+  const roiType = $<HTMLSelectElement>('roi-type').value;
   const step1Done = roiType === 'municipio'
-    ? !!document.getElementById('select-municipio').value
+    ? !!$<HTMLSelectElement>('select-municipio').value
     : !!selectedPoint;
 
-  const dataSource = document.getElementById('data-source').value;
-  const tifInput = document.getElementById('tif-file');
+  const dataSource = $<HTMLSelectElement>('data-source').value;
+  const tifInput = document.getElementById('tif-file') as HTMLInputElement | null;
   const hasTif = !!(tifInput && tifInput.files && tifInput.files.length > 0);
   const step2Done = dataSource === 'mapbiomas' ? hasGeeCredentials : hasTif;
 
-  const setStepState = (n, done, pendingLabel, doneLabel) => {
-    const el = document.getElementById(`step-${n}`);
-    const number = document.getElementById(`step-${n}-number`);
-    const status = document.getElementById(`step-${n}-status`);
+  const setStepState = (n: number, done: boolean, pendingLabel: string, doneLabel: string) => {
+    const el = $(`step-${n}`);
+    const number = $(`step-${n}-number`);
+    const status = $(`step-${n}-status`);
     el.classList.toggle('done', done);
     el.classList.toggle('pending', !done);
     number.textContent = done ? '✓' : String(n);
@@ -423,17 +445,17 @@ function updateStepper() {
     'Fonte de dados parametrizada.');
 
   const step3Ready = step1Done && step2Done;
-  document.getElementById('step-3').classList.toggle('done', step3Ready);
-  document.getElementById('step-3').classList.toggle('pending', !step3Ready);
-  document.getElementById('step-3-status').textContent = step3Ready
+  $('step-3').classList.toggle('done', step3Ready);
+  $('step-3').classList.toggle('pending', !step3Ready);
+  $('step-3-status').textContent = step3Ready
     ? 'Tudo pronto — pode calcular.'
     : 'Disponível assim que os passos 1 e 2 estiverem completos.';
-  document.getElementById('btn-compute').disabled = !step3Ready;
+  ($('btn-compute') as HTMLButtonElement).disabled = !step3Ready;
 }
 
-async function saveGeeCredentials() {
+async function saveGeeCredentials(): Promise<void> {
   if (!requireAuth()) return;
-  const jsonText = document.getElementById('gee-credentials-json').value.trim();
+  const jsonText = $<HTMLTextAreaElement>('gee-credentials-json').value.trim();
   if (!jsonText) {
     showToast('Cole o JSON da credencial antes de salvar.', 'error');
     return;
@@ -447,17 +469,17 @@ async function saveGeeCredentials() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Credencial inválida.');
     showToast(data.message, 'success');
-    document.getElementById('gee-credentials-json').value = '';
-    document.getElementById('gee-credentials-details').removeAttribute('open');
+    $<HTMLTextAreaElement>('gee-credentials-json').value = '';
+    $('gee-credentials-details').removeAttribute('open');
     loadGeeCredentialsStatus();
-  } catch (err) {
+  } catch (err: any) {
     showToast(err.message, 'error');
   }
 }
 
 // Validação prévia dos campos obrigatórios, conforme modo de área/fonte
-function validateAnalysisInputs(roiType, dataSource, tifFile) {
-  if (roiType === 'municipio' && !document.getElementById('select-municipio').value) {
+function validateAnalysisInputs(roiType: string, dataSource: string, tifFile: File | null): string | null {
+  if (roiType === 'municipio' && !$<HTMLSelectElement>('select-municipio').value) {
     return 'Selecione um estado e um município antes de calcular.';
   }
   if (dataSource === 'mapbiomas') {
@@ -473,12 +495,12 @@ function validateAnalysisInputs(roiType, dataSource, tifFile) {
 }
 
 // Execução da Análise de Paisagem (dados reais via /api/metrics/calculate)
-async function runLandscapeAnalysis() {
+async function runLandscapeAnalysis(): Promise<void> {
   if (!requireAuth()) return;
 
-  const roiType = document.getElementById('roi-type').value;
-  const dataSource = document.getElementById('data-source').value;
-  const tifInput = document.getElementById('tif-file');
+  const roiType = $<HTMLSelectElement>('roi-type').value;
+  const dataSource = $<HTMLSelectElement>('data-source').value;
+  const tifInput = $<HTMLInputElement>('tif-file');
   const tifFile = tifInput.files && tifInput.files[0] ? tifInput.files[0] : null;
 
   const validationError = validateAnalysisInputs(roiType, dataSource, tifFile);
@@ -487,7 +509,7 @@ async function runLandscapeAnalysis() {
     return;
   }
 
-  const button = document.getElementById('btn-compute');
+  const button = $<HTMLButtonElement>('btn-compute');
   button.disabled = true;
   button.textContent = '⏳ Processando...';
 
@@ -495,15 +517,15 @@ async function runLandscapeAnalysis() {
   formData.append('data_source', dataSource);
 
   if (roiType === 'municipio') {
-    const ufSelect = document.getElementById('select-uf');
-    const muniSelect = document.getElementById('select-municipio');
+    const ufSelect = $<HTMLSelectElement>('select-uf');
+    const muniSelect = $<HTMLSelectElement>('select-municipio');
     formData.append('municipio_codigo', muniSelect.value);
-    formData.append('municipio_nome', muniSelect.selectedOptions[0] ? muniSelect.selectedOptions[0].textContent : '');
+    formData.append('municipio_nome', muniSelect.selectedOptions[0] ? muniSelect.selectedOptions[0].textContent || '' : '');
     formData.append('municipio_uf', ufSelect.value);
   } else if (selectedPoint) {
-    formData.append('point_lon', selectedPoint.lng);
-    formData.append('point_lat', selectedPoint.lat);
-    formData.append('buffer_dist', document.getElementById('buffer-dist').value);
+    formData.append('point_lon', String(selectedPoint.lng));
+    formData.append('point_lat', String(selectedPoint.lat));
+    formData.append('buffer_dist', $<HTMLInputElement>('buffer-dist').value);
   }
 
   if (dataSource === 'geotiff' && tifFile) {
@@ -521,11 +543,11 @@ async function runLandscapeAnalysis() {
       throw new Error(data.detail || 'Falha ao calcular métricas.');
     }
 
-    document.getElementById('results-placeholder').style.display = 'none';
-    document.getElementById('results-content').style.display = 'block';
+    $('results-placeholder').style.display = 'none';
+    $('results-content').style.display = 'block';
     renderMetricsResult(data);
     showToast('Análise concluída com sucesso.', 'success');
-  } catch (err) {
+  } catch (err: any) {
     showToast(err.message, 'error');
   } finally {
     button.disabled = false;
@@ -533,11 +555,11 @@ async function runLandscapeAnalysis() {
   }
 }
 
-function renderMetricsResult(data) {
+function renderMetricsResult(data: any): void {
   const lm = data.landscape_metrics || {};
-  const fmt = (v) => (typeof v === 'number' ? v.toFixed(2) : '—');
+  const fmt = (v: unknown) => (typeof v === 'number' ? v.toFixed(2) : '—');
 
-  document.getElementById('landscape-metrics-summary').innerHTML = `
+  $('landscape-metrics-summary').innerHTML = `
     <div style="background: rgba(16,185,129,0.1); border: 1px solid var(--accent-emerald); padding: 1rem; border-radius: 8px;">
       <b>${data.label}</b>${data.ano ? ` (${data.ano})` : ''}<br>
       <b>SHDI (Diversidade de Shannon):</b> ${fmt(lm.shannon_diversity_index)} •
@@ -549,7 +571,7 @@ function renderMetricsResult(data) {
   const classMetrics = data.class_metrics || {};
   const classNames = Object.keys(classMetrics);
 
-  const tbody = document.querySelector('#metrics-table tbody');
+  const tbody = document.querySelector('#metrics-table tbody') as HTMLTableSectionElement;
   tbody.innerHTML = '';
   classNames.forEach((cls) => {
     const row = classMetrics[cls];
@@ -563,7 +585,7 @@ function renderMetricsResult(data) {
     `;
   });
 
-  const ctx = document.getElementById('metrics-chart').getContext('2d');
+  const ctx = ($('metrics-chart') as HTMLCanvasElement).getContext('2d');
   if (metricsChartInstance) metricsChartInstance.destroy();
 
   metricsChartInstance = new Chart(ctx, {
@@ -586,10 +608,10 @@ function renderMetricsResult(data) {
 }
 
 // Matriz Socioecológica e Clustering API (dados reais)
-async function loadSseMatrix() {
+async function loadSseMatrix(): Promise<void> {
   if (!requireAuth()) return;
-  const head = document.getElementById('sse-table-head');
-  const body = document.getElementById('sse-table-body');
+  const head = $('sse-table-head');
+  const body = $('sse-table-body');
   try {
     const res = await fetch('/api/sse/matrix', { headers: authHeaders() });
     const data = await res.json();
@@ -601,16 +623,16 @@ async function loadSseMatrix() {
       return;
     }
     renderSseTable(data.records);
-  } catch (err) {
+  } catch (err: any) {
     head.innerHTML = '<th>Não foi possível carregar a Matriz SSE</th>';
     body.innerHTML = '';
     showToast(err.message, 'error');
   }
 }
 
-function renderSseTable(records) {
-  const head = document.getElementById('sse-table-head');
-  const body = document.getElementById('sse-table-body');
+function renderSseTable(records: Array<Record<string, any>>): void {
+  const head = $('sse-table-head');
+  const body = $('sse-table-body');
   if (!records || records.length === 0) return;
 
   const cols = Object.keys(records[0]);
@@ -623,15 +645,15 @@ function renderSseTable(records) {
 }
 
 // Alternar Controles de Clustering
-function toggleClusterControls() {
-  const algo = document.getElementById('cluster-algo').value;
-  document.getElementById('kmeans-controls').style.display = algo === 'kmeans' ? 'block' : 'none';
-  document.getElementById('dbscan-controls').style.display = algo === 'dbscan' ? 'block' : 'none';
+function toggleClusterControls(): void {
+  const algo = $<HTMLSelectElement>('cluster-algo').value;
+  $('kmeans-controls').style.display = algo === 'kmeans' ? 'block' : 'none';
+  $('dbscan-controls').style.display = algo === 'dbscan' ? 'block' : 'none';
 }
 
-async function runClustering() {
+async function runClustering(): Promise<void> {
   if (!requireAuth()) return;
-  const algo = document.getElementById('cluster-algo').value;
+  const algo = $<HTMLSelectElement>('cluster-algo').value;
 
   try {
     const matrixRes = await fetch('/api/sse/matrix', { headers: authHeaders() });
@@ -639,7 +661,7 @@ async function runClustering() {
     if (!matrixRes.ok) throw new Error(matrixData.detail || 'Falha ao carregar a Matriz SSE.');
 
     const excluded = ['point_lon', 'point_lat', 'buffer_dist', 'ano'];
-    const featureCols = (matrixData.numeric_columns || []).filter(c => !excluded.includes(c));
+    const featureCols = (matrixData.numeric_columns || []).filter((c: string) => !excluded.includes(c));
 
     if (!matrixData.records || matrixData.records.length < 2 || featureCols.length === 0) {
       showToast('Salve ao menos 2 análises (com métricas numéricas) antes de executar um agrupamento.', 'error');
@@ -648,11 +670,11 @@ async function runClustering() {
 
     const endpoint = algo === 'kmeans' ? '/api/sse/cluster/kmeans' : '/api/sse/cluster/dbscan';
     const payload = algo === 'kmeans'
-      ? { feature_cols: featureCols, k: parseInt(document.getElementById('input-k').value, 10) }
+      ? { feature_cols: featureCols, k: parseInt($<HTMLInputElement>('input-k').value, 10) }
       : {
           feature_cols: featureCols,
-          eps: parseFloat(document.getElementById('input-eps').value),
-          min_samples: parseInt(document.getElementById('input-min-samples').value, 10)
+          eps: parseFloat($<HTMLInputElement>('input-eps').value),
+          min_samples: parseInt($<HTMLInputElement>('input-min-samples').value, 10)
         };
 
     const res = await fetch(endpoint, {
@@ -665,16 +687,16 @@ async function runClustering() {
 
     renderClusterResult(algo, data);
     showToast(algo === 'kmeans' ? 'Agrupamento concluído com sucesso.' : 'Análise de densidade concluída.', 'success');
-  } catch (err) {
+  } catch (err: any) {
     showToast(err.message, 'error');
   }
 }
 
-function renderClusterResult(algo, data) {
+function renderClusterResult(algo: string, data: any): void {
   const clusterKey = algo === 'kmeans' ? 'cluster_kmeans' : 'cluster_dbscan';
-  const pcaPoints = data.pca_data || [];
+  const pcaPoints: any[] = data.pca_data || [];
 
-  const byCluster = {};
+  const byCluster: Record<string, Array<{ x: number; y: number }>> = {};
   pcaPoints.forEach((p) => {
     const key = String(p[clusterKey]);
     if (!byCluster[key]) byCluster[key] = [];
@@ -688,7 +710,7 @@ function renderClusterResult(algo, data) {
     return { label: key, data: byCluster[key], backgroundColor: color, pointRadius: 8 };
   });
 
-  const ctx = document.getElementById('pca-chart').getContext('2d');
+  const ctx = ($('pca-chart') as HTMLCanvasElement).getContext('2d');
   if (pcaChartInstance) pcaChartInstance.destroy();
 
   pcaChartInstance = new Chart(ctx, {
@@ -703,64 +725,64 @@ function renderClusterResult(algo, data) {
     }
   });
 
-  document.getElementById('cluster-summary-info').innerText =
+  $('cluster-summary-info').innerText =
     algo === 'kmeans'
       ? `✅ K-Means concluído: ${data.k} cluster(s) formado(s) • Silhouette Score: ${data.silhouette != null ? data.silhouette.toFixed(3) : '—'}`
       : `✅ DBSCAN concluído: ${data.n_clusters} cluster(s) denso(s) • ${data.n_noise} outlier(s) identificado(s)`;
 }
 
 // Gestão de Avatares 3D e Onboarding
-function toggleSpeechBubble() {
-  const bubble = document.getElementById('avatar-speech');
+function toggleSpeechBubble(): void {
+  const bubble = $('avatar-speech');
   bubble.style.display = bubble.style.display === 'none' ? 'block' : 'none';
 }
 
-function openOnboardingModal() {
-  document.getElementById('onboarding-modal').style.display = 'flex';
-  document.getElementById('step-0-selection').style.display = 'flex';
-  document.getElementById('step-tour-text').style.display = 'none';
-  document.getElementById('btn-next-step').style.display = 'none';
+function openOnboardingModal(): void {
+  $('onboarding-modal').style.display = 'flex';
+  $('step-0-selection').style.display = 'flex';
+  $('step-tour-text').style.display = 'none';
+  $('btn-next-step').style.display = 'none';
   currentTourStep = 0;
 }
 
-function closeOnboardingModal() {
-  document.getElementById('onboarding-modal').style.display = 'none';
+function closeOnboardingModal(): void {
+  $('onboarding-modal').style.display = 'none';
 }
 
-function selectAvatar(avatarKey) {
+function selectAvatar(avatarKey: AvatarKey): void {
   selectedAvatar = avatarKey;
   currentTourStep = 0;
 
-  document.getElementById('avatar-widget-img').src = avatarKey === 'maria_julia' ? '/avatar_maria_julia.png' : '/avatar_pedro.png';
-  document.getElementById('step-0-selection').style.display = 'none';
-  document.getElementById('step-tour-text').style.display = 'block';
-  document.getElementById('btn-next-step').style.display = 'inline-block';
+  ($('avatar-widget-img') as HTMLImageElement).src = avatarKey === 'maria_julia' ? '/avatar_maria_julia.png' : '/avatar_pedro.png';
+  $('step-0-selection').style.display = 'none';
+  $('step-tour-text').style.display = 'block';
+  $('btn-next-step').style.display = 'inline-block';
 
   renderTourStep();
 }
 
-function renderTourStep() {
+function renderTourStep(): void {
   const steps = tourSteps[selectedAvatar];
   const step = steps[currentTourStep];
 
-  document.getElementById('tour-step-title').innerText = step.title;
-  document.getElementById('step-tour-text').innerText = step.text;
-  document.getElementById('speech-text').innerText = step.text;
+  $('tour-step-title').innerText = step.title;
+  $('step-tour-text').innerText = step.text;
+  $('speech-text').innerText = step.text;
 }
 
-function nextTourStep() {
+function nextTourStep(): void {
   const steps = tourSteps[selectedAvatar];
   currentTourStep++;
   if (currentTourStep >= steps.length) {
     closeOnboardingModal();
-    document.getElementById('avatar-speech').style.display = 'block';
+    $('avatar-speech').style.display = 'block';
   } else {
     renderTourStep();
   }
 }
 
 // Exportação e Exclusão LGPD (dados reais via /api/lgpd)
-async function exportUserData() {
+async function exportUserData(): Promise<void> {
   if (!requireAuth()) return;
   try {
     const res = await fetch('/api/lgpd/export', { headers: authHeaders() });
@@ -773,12 +795,12 @@ async function exportUserData() {
     dlAnchorElem.setAttribute("download", "dados_lgpd_portabilidade.json");
     dlAnchorElem.click();
     showToast('Seu arquivo de exportação foi preparado.', 'success');
-  } catch (err) {
+  } catch (err: any) {
     showToast(err.message, 'error');
   }
 }
 
-async function deleteUserAccount() {
+async function deleteUserAccount(): Promise<void> {
   if (!requireAuth()) return;
   if (!confirm("Tem certeza que deseja solicitar a eliminação dos seus dados conforme o Art. 18 da LGPD? Esta ação é irreversível.")) {
     return;
@@ -792,7 +814,7 @@ async function deleteUserAccount() {
     showToast(data.message, 'success');
     alert(`${data.message}\nProtocolo: ${data.protocolo_exclusao}`);
     logout();
-  } catch (err) {
+  } catch (err: any) {
     showToast(err.message, 'error');
   }
 }

@@ -4,8 +4,7 @@ Testes dos módulos novos de dados de referência nacionais do backend
 `ana_hidroclimatica.py`) — malha municipal, MapBiomas agregado, PRODES e ANA
 (ver ROADMAP.md, seção de pré-carga de dados nacionais). Cada teste usa um
 SQLite isolado em `tmp_path` (nunca toca em `data/app.db` real), mesmo
-espírito do fixture `temp_db` de `tests/conftest.py` para o `db.py` do
-Streamlit legado.
+espírito de `tests/test_backend_db_auth.py`.
 """
 import sys
 from pathlib import Path
@@ -13,13 +12,6 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
-
-# Mesmo motivo de tests/test_backend_app.py: descarta um sys.modules["app"]
-# stale (o app.py Streamlit da raiz, importado por algum tests/test_app_*.py
-# anterior na mesma sessão) antes de importar o pacote `app` do backend.
-for _mod_name in list(sys.modules):
-    if _mod_name == "app" or _mod_name.startswith("app."):
-        del sys.modules[_mod_name]
 
 import pytest
 

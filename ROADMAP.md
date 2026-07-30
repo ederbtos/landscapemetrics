@@ -387,6 +387,71 @@
     `sys.modules["app"]` stale antes de importar (`tests/test_backend_app.py` e
     `tests/test_backend_db_national.py`); suíte completa: 138 testes passando (era 121 + esse bug
     de colisão intermitente).
+- **Remoção completa do Streamlit + padronização em Python (backend) / TypeScript (frontend)
+  (2026-07-27)**: `app.py` (2886 linhas), `auth.py`, `.streamlit/` e as dependências
+  `streamlit`/`altair`/`streamlit-folium`/`folium` (raiz `requirements.txt`) foram apagados — o
+  backend FastAPI + frontend `static/` já eram o caminho real desde a migração anterior, essa
+  fase só termina de desligar o que ainda coexistia. Detalhes:
+  - **`landscape_core.py`/`clustering.py`/`supervised_models.py`** (lógica pura, sem Streamlit)
+    movidos de vez para `backend/app/services/` — os 3 consumidores (`services/landscape.py`,
+    `api/routes/sse.py`/`supervised.py`) trocaram o padrão frágil `_load_legacy_module`
+    (`sys.path.insert` + `importlib.import_module`) por import de pacote normal. De brinde: `sse.py`
+    e `supervised.py` tinham o mesmo `parents[N]` errado (uma camada rasa demais) que só não
+    quebrava por acidente — `metrics.py` importa primeiro em `main.py` e deixa o `sys.path` correto
+    como efeito colateral antes deles rodarem. Corrigido para `parents[4]`, correto por conta
+    própria agora.
+  - **`db.py` (raiz) apagado por completo** — só tinha 3 funções ainda vivas
+    (`get_user_settings`/`save_user_settings`/`delete_user_settings`, usadas por
+    `api/routes/user.py`/`lgpd.py` via `import db`), migradas para um módulo próprio
+    `backend/app/db/user_settings.py` (mesmo padrão de `credentials.py`/`users.py`, sem truque de
+    `sys.path`). O resto (`get_credentials`/`save_credentials`/`create_user`/`verify_user`/
+    `*_metric_result*`) já era código morto — o backend tem equivalentes próprios há tempo.
+    `backend/app/db/schema.py::init_db()` nunca criava a tabela `user_settings` (só o `db.py`
+    antigo criava) — um deploy do zero só com o backend ficaria sem essa tabela; corrigido.
+  - **Suíte de testes**: `tests/conftest.py` parou de importar `streamlit`/expor `fake_secrets`/
+    `temp_db` (o `db.py` que sumiu). Os ~9 arquivos `test_app_*.py`/`test_auth.py`/`test_db*.py`
+    (cobriam `landscape_core.py` só indiretamente, via `import app` + `.__wrapped__` para
+    contornar o `@st.cache_data`) foram portados para importar `landscape_core`/`sse`/`clustering`/
+    `supervised_models` diretamente do backend, com nomes novos (`test_landscape_core_*.py`,
+    `test_backend_sse.py`) — corpos de teste preservados, só o alvo do import mudou. `test_db.py`/
+    `test_db_metrics.py`/`test_auth.py`/`test_app_structure.py` foram descartados (testavam código
+    morto ou um bug estrutural que só existia no `app.py`), sem perda de cobertura real —
+    equivalente já existe em `tests/test_backend_db_auth.py`/`test_backend_api_routes.py`. Suíte
+    completa: mesma contagem efetiva de antes, zero `import streamlit`/`app`/`auth`/`db` restante.
+  - **3 features "concluídas" no histórico só existiam em `app.py`, sem rota de API nem UI no
+    frontend novo** (descoberto ao portar os testes, não durante o resto da migração):
+    - **Predição de anos futuros (Markov)**: pequena e autocontida (2 funções puras, sem
+      dependência de outra coisa) — movida para `landscape_core.py` com seus testes. Ainda sem
+      endpoint/UI própria.
+    - **Relatório HTML multi-arquivo + gráfico de comparação (matplotlib)**: descartada — o
+      frontend novo renderiza gráficos no cliente (Chart.js), sem necessidade clara de um
+      equivalente server-side.
+    - **Métricas por município em lote via shapefile**: só a parte pura
+      (`_detect_municipio_columns`) foi portada — o resto depende de `uploaded_file_to_gdf`
+      (também nunca portada, sem uso em lugar nenhum do backend hoje) e de persistência
+      (`db.get_metric_result`/`save_metric_result`, o `db.py` que saiu) — esforço de port maior,
+      separado, não feito aqui.
+  - **Bug real encontrado e corrigido ao escrever o teste da Matriz SSE**: `backend/app/api/routes/
+    sse.py::_build_sse_matrix` iterava nomes de MÉTRICA (`class_metrics.columns`) e pegava só
+    `.iloc[0]` (a primeira linha) — para qualquer análise com mais de uma classe presente (o caso
+    normal), isso descartava todas as classes menos a primeira, sem gerar coluna `pct_*` nenhuma.
+    `/api/sse/matrix` estava retornando dado incompleto/errado em produção desde que essa rota foi
+    escrita. Corrigido para pivotar `proportion_of_landscape` por classe (mesma lógica do `app.py`
+    antigo). Coberto por `tests/test_backend_sse.py` (4 testes).
+  - **Frontend migrado para TypeScript**: `frontend-src/app.ts` (porte 1:1 de `static/app.js`, 798
+    linhas — mesmo comportamento, só tipado, sem redesenhar UI) compila via `tsc` (`module: "none"`,
+    sem bundler/dev-server — decisão consciente: o app é multi-página com handlers inline
+    `onclick=`/`onchange=`/`onsubmit=`, um bundler/SPA-router não traria benefício aqui) para
+    `static/app.js` (`tsconfig.json`, `outFile`). `static/app.js` virou artefato gerado
+    (`.gitignore`), nunca mais editado à mão. `Dockerfile` ganhou um estágio Node isolado
+    (`frontend-build`) que compila e copia só o `app.js` final para a imagem Python — Node nunca
+    entra na imagem de produção. Diff do compilado contra o `app.js` anterior confirmado
+    linha-a-linha equivalente (só formatação/`"use strict"` — nenhuma mudança de comportamento).
+  - **Achado à parte, fora do escopo desta migração**: a Fase 8 (abaixo) descreve "Suporte a Banco
+    de Dados PostgreSQL" como concluído, mas `backend/app/db/*` usa só `sqlite3` puro — esse
+    suporte só existia em `db.py::_get_db_url()` (Streamlit-era), que esta migração apagou. Ou
+    seja, o backend nunca teve de fato suporte a Postgres — só fica registrado aqui, não é escopo
+    resolver.
 
 ### 🔄 Mudança de arquitetura (2026-07-04): login por e-mail/senha + JWT, com Google OAuth opcional
 
@@ -530,21 +595,25 @@ Detalhes completos (pré-requisitos, geração das chaves) em [README.md](README
 ```bash
 python -m venv .venv
 .venv\Scripts\activate          # Windows
-pip install -r requirements.txt
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-# edite .streamlit/secrets.toml: jwt_secret_key e app_encryption_key
-streamlit run app.py
+pip install -r backend/requirements.txt
+cp backend/.env.example backend/.env
+# edite backend/.env: jwt_secret_key, app_encryption_key e cors_origins
+
+npm install
+npm run build                   # compila frontend-src/ -> static/app.js
+
+cd backend && uvicorn app.main:app --reload
 ```
 
 ### Docker
 
 ```bash
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-# edite .streamlit/secrets.toml: jwt_secret_key e app_encryption_key
+cp backend/.env.example backend/.env
+# edite backend/.env: jwt_secret_key, app_encryption_key e cors_origins
 docker compose up --build
 ```
 
-Acesse `http://localhost:8501`. Crie uma conta (e-mail/senha) na aba "Criar conta" — ou, se a
-seção `[auth]` do Google estiver configurada em `secrets.toml`, use o botão "Entrar com Google" —
-e, depois de logado, cole sua própria credencial de conta de serviço do Earth Engine na interface
-(não vai em `secrets.toml`).
+Acesse `http://localhost:8000`. Crie uma conta (e-mail/senha) no botão "Entrar / Cadastrar" — ou,
+se `google_client_id`/`google_client_secret`/`google_redirect_uri` estiverem configurados em
+`backend/.env`, use o botão "Entrar com Google" — e, depois de logado, cole sua própria credencial
+de conta de serviço do Earth Engine na interface (não vai em `backend/.env`).

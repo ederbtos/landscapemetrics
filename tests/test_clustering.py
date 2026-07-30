@@ -1,11 +1,18 @@
 """
 Testes unitários para o módulo clustering.py (K-Means, DBSCAN, PCA, Elbow Method)
 """
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
-import clustering
+BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.services import clustering
 
 
 @pytest.fixture

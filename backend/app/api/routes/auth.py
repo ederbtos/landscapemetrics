@@ -1,27 +1,24 @@
 """
 Descrição da funcionalidade
 ---------------------------
-Rotas de autenticação — porte de `auth.py` (formulários Streamlit
-`_render_login_form`/`_render_register_form`) para endpoints REST. Cobre
-e-mail/senha e Google OAuth (`/google/login` + `/google/callback`, via
-Authlib) — o endpoint `GET /config` informa o frontend se deve mostrar o
-botão do Google (`google_oauth_configured`, ver core/config.py).
+Rotas de autenticação REST — e-mail/senha e Google OAuth (`/google/login` +
+`/google/callback`, via Authlib) — o endpoint `GET /config` informa o
+frontend se deve mostrar o botão do Google (`google_oauth_configured`, ver
+core/config.py).
 
 Contexto técnico
 -----------------
 Cada login/registro/callback do Google bem-sucedido: (1) devolve um access
 token JWT de vida curta no corpo da resposta (ou, no caso do Google, embutido
-no fragmento da URL de redirect — ver `_finish_google_login` abaixo, já que
-esse fluxo é uma navegação de página inteira, não um fetch), (2) grava um
-refresh token opaco (hash SHA-256) em `refresh_tokens` e o envia em cookie
-httpOnly — isso é o que resolve o "Bloqueio conhecido" do ROADMAP.md (sessão
-sobrevive a F5 via `POST /refresh`, que o frontend chama ao carregar a
-página).
+no fragmento da URL de redirect — ver `google_callback` abaixo, já que esse
+fluxo é uma navegação de página inteira, não um fetch), (2) grava um refresh
+token opaco (hash SHA-256) em `refresh_tokens` e o envia em cookie httpOnly —
+isso é o que resolve o "Bloqueio conhecido" do ROADMAP.md (sessão sobrevive a
+F5 via `POST /refresh`, que o frontend chama ao carregar a página).
 
 Um usuário que loga só via Google nunca ganha uma linha na tabela `users`
-(essa tabela é só para senha/hash bcrypt) — igual ao app Streamlit original,
-onde `st.user.email` bastava como identidade em `db.py`/demais tabelas
-(nenhuma tem FOREIGN KEY para `users`, ver `db/schema.py`).
+(essa tabela é só para senha/hash bcrypt) — o e-mail já basta como identidade
+em `db/schema.py`/demais tabelas (nenhuma tem FOREIGN KEY para `users`).
 """
 from datetime import datetime, timezone
 from urllib.parse import quote

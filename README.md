@@ -2,15 +2,15 @@
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Progresso](https://img.shields.io/badge/roadmap-100%25-brightgreen.svg)
+![Roadmap](https://img.shields.io/badge/roadmap-ver_ROADMAP.md-blue.svg)
 
-> **Progresso: 100% (Concluído 🎉)** — Todas as fases e requisitos foram totalmente implementados e testados:
+> **Progresso: ver [ROADMAP.md](ROADMAP.md) para o status real, fase a fase** — o backend/frontend abaixo estão em produção, mas nem tudo que já existiu (versão Streamlit anterior) foi portado:
 > - **Backend REST API em Python (FastAPI)** (`backend/app/main.py`): Autenticação JWT com cookie HttpOnly, credenciais GEE criptografadas (Fernet), histórico multi-tenant, IBGE API e LGPD.
-> - **Frontend Web App em TypeScript (`static/`)**: Interface Glassmorphism Dark Mode com mapas Leaflet, gráficos Chart.js/Altair, PWA Mobile, acessibilidade VLibras/WCAG 2.2 AA e Avatares 3D (**Maria Júlia & Pedro**).
-> - **Machine Learning & Analytics**: 
->   - **Não Supervisionado**: K-Means & DBSCAN com projeção 2D PCA, Curva do Cotovelo e Silhouette Score; predição por Cadeia de Markov.
+> - **Frontend Web App em TypeScript (`static/`, compilado de `frontend-src/`)**: Interface Glassmorphism Dark Mode com mapas Leaflet, gráficos Chart.js, PWA Mobile, acessibilidade VLibras/WCAG 2.2 AA e Avatares 3D (**Maria Júlia & Pedro**).
+> - **Machine Learning & Analytics**:
+>   - **Não Supervisionado**: K-Means & DBSCAN com projeção 2D PCA, Curva do Cotovelo e Silhouette Score. Predição por Cadeia de Markov: lógica preservada em `landscape_core.py`, mas **sem rota de API/UI própria ainda** — ver ROADMAP.md.
 >   - **Supervisionado (Etapa 2)**: **Random Forest**, **XGBoost** e **LightGBM** com **Validação Cruzada Espacial (*Spatial K-Fold*)**, **AUC-ROC**, **F1-Score**, **Matriz de Confusão** e **Importância por Permutação (*Permutation Importance*)**.
-> - **Isolamento Total por Usuário (Multi-Tenant & PostgreSQL)**: Tabela `user_settings` e `metric_results` com isolamento estrito por `user_email`.
+> - **Isolamento por Usuário (Multi-Tenant)**: tabelas `user_settings`/`metric_results`/`user_credentials` com isolamento estrito por `user_email`, em SQLite (`data/app.db`) — sem suporte a PostgreSQL implementado no backend atual.
 
 
 
@@ -24,7 +24,7 @@ Contribuições:
 
 ## 📖 Descrição
 
-O **Landscape Metrics Extractor** é uma aplicação web desenvolvida em Streamlit que permite extrair e analisar métricas de paisagem para pontos específicos no território brasileiro. A aplicação utiliza dados do MapBiomas através do Google Earth Engine e calcula métricas detalhadas usando a biblioteca PyLandStats.
+O **Landscape Metrics Extractor** é uma aplicação web (backend FastAPI + frontend TypeScript) que permite extrair e analisar métricas de paisagem para pontos específicos no território brasileiro. A aplicação utiliza dados do MapBiomas através do Google Earth Engine e calcula métricas detalhadas usando a biblioteca PyLandStats.
 
 Cada usuário faz login (por e-mail/senha ou, opcionalmente, com Google) e cadastra sua **própria** credencial de conta de serviço do Earth Engine — não há mais uma conta de serviço única compartilhada entre todos os usuários. Veja o estado detalhado do projeto e o que falta em [ROADMAP.md](ROADMAP.md).
 
@@ -39,13 +39,13 @@ Cada usuário faz login (por e-mail/senha ou, opcionalmente, com Google) e cadas
 - **🧭 Reprojeção automática**: se o GeoTIFF enviado estiver em coordenadas geográficas (graus), o app reprojeta automaticamente (zona UTM do ponto, ou SIRGAS 2000/Brazil Polyconic no modo raster inteiro) — não precisa reprojetar manualmente antes de enviar. O raster convertido fica disponível para download
 - **🧮 Cálculo sob demanda**: o processamento só roda quando você clica em "Calcular métricas", com cada etapa visível em tempo real e uma barra de progresso única (etapa + %) do início ao fim — não recalcula sozinho a cada interação com a página
 - **✨ Métricas reveladas uma a uma**: cada métrica de paisagem aparece em sua própria seção conforme é calculada, com gráfico de barras interativo (por classe) + tabela, em vez de só uma tabela técnica ao final
-- **📚 Múltiplos GeoTIFFs comparados**: envie mais de um raster próprio (ex.: anos diferentes da mesma área) — cada um é processado separadamente e comparado num gráfico por métrica (ano identificado pelo nome do arquivo, quando presente), com um relatório HTML para baixar, abrir no navegador e imprimir/salvar como PDF
-- **🔮 Predição para anos futuros (Markov)**: com 2+ GeoTIFFs de anos diferentes, o app monta a matriz de transição entre classes de uso do solo e projeta a proporção futura de cada classe para os anos que você escolher — método não-espacial, projeta só proporções agregadas, não um mapa futuro
-- **🧬 Matriz socioecológica (SSE)**: agrega todas as suas análises salvas (ponto ou município, ao longo do tempo) numa matriz multivariada — métricas de paisagem por linha, com a opção de anexar variáveis socioeconômicas/hidroclimáticas via upload de CSV (casadas por município+ano) e enriquecimento automático com população estimada do IBGE
-- **📊 Análise Robusta**: Cálculo de 12+ métricas de paisagem diferentes
-- **📥 Exportação**: Download dos resultados em formato CSV
-- **🗺️ Visualização**: Mapas interativos e gráficos das classes de uso do solo
+- **🧬 Matriz socioecológica (SSE) & Clustering**: agrega todas as suas análises salvas numa matriz multivariada e permite agrupá-las com K-Means/DBSCAN, com projeção 2D via PCA
+- **📊 Análise Robusta**: Cálculo de 12+ métricas de paisagem diferentes, por classe e de nível de paisagem
+- **🗺️ Visualização**: Mapas interativos (Leaflet) e gráficos (Chart.js) das classes de uso do solo
+- **📜 Governança LGPD**: exportação dos seus dados em JSON e eliminação de conta sob demanda (Art. 18)
 - **🐳 Docker**: imagem e `docker-compose.yml` prontos para rodar sem instalar dependências localmente
+
+> Recursos que existiram na versão anterior (Streamlit) e ainda não têm equivalente no frontend atual — comparação entre múltiplos GeoTIFFs com relatório HTML, predição de anos futuros via cadeia de Markov, exportação em CSV/XLSX, enriquecimento da matriz SSE com CSV externo/população do IBGE — ver a nota em "[📍 Onde encontrar seus resultados](#-onde-encontrar-seus-resultados)" e o ROADMAP.md.
 
 ---
 
@@ -53,22 +53,23 @@ Cada usuário faz login (por e-mail/senha ou, opcionalmente, com Google) e cadas
 
 ### Principais Bibliotecas
 
-Versões conforme [requirements.txt](requirements.txt) — mantenha esse arquivo como referência única, esta tabela pode ficar desatualizada:
+Backend em Python (FastAPI) + frontend em TypeScript compilado (`tsc`, sem bundler — ver seção "Estrutura do Projeto" abaixo). Versões conforme [backend/requirements.txt](backend/requirements.txt)/[package.json](package.json) — mantenha esses arquivos como referência única, esta tabela pode ficar desatualizada:
 
 | Biblioteca | Versão | Função |
 |------------|--------|---------|
-| `streamlit` | 1.58.0 | Interface web |
+| `fastapi` + `uvicorn` | 0.115.6 / 0.34.0 | API HTTP do backend |
+| `typescript` | ^5.7 | Tipagem/compilação do frontend (`frontend-src/` → `static/app.js`) |
 | `geemap` | 0.30.0 | Integração Google Earth Engine |
 | `pylandstats` | 3.1.0 | Cálculo de métricas de paisagem |
 | `geopandas` | 0.14.3 | Processamento de dados geoespaciais |
 | `earthengine-api` | 0.1.394 | API Google Earth Engine |
 | `rasterio` | 1.4.4 | Leitura/recorte do GeoTIFF enviado pelo usuário (fonte de dados alternativa) |
-| `PyJWT` | 2.10.1 | Sessão de login por e-mail/senha (token assinado) |
+| `PyJWT` | 2.10.1 | Sessão de login por e-mail/senha (JWT assinado + refresh token) |
 | `bcrypt` | 4.2.1 | Hash de senha das contas por e-mail/senha |
-| `Authlib` + `httpx` | 1.7.2 / 0.28.1 | OAuth do login com Google (opcional, via `st.login()`) |
+| `Authlib` + `httpx` | 1.7.2 / 0.28.1 | OAuth do login com Google (opcional, `GET /api/auth/google/login`) |
 | `cryptography` | 49.0.0 | Criptografia (Fernet) das credenciais salvas por usuário |
 | `requests` | 2.34.2 | Chamadas à API do IBGE (localidades, malhas territoriais, população estimada) |
-| `scipy` | 1.17.1 | Predição de anos futuros (potência fracionária da matriz de transição, cadeia de Markov) |
+| `scipy` | 1.17.1 | Predição de anos futuros (potência fracionária da matriz de transição, cadeia de Markov — ver ROADMAP.md) |
 
 ### Fontes de Dados
 
@@ -89,8 +90,8 @@ Versões conforme [requirements.txt](requirements.txt) — mantenha esse arquivo
 ### 2. Credenciais OAuth do Google (opcional — só se quiser o botão "Entrar com Google")
 
 - O login por e-mail/senha funciona sem nenhuma credencial externa — pule esta etapa se não quiser o botão do Google.
-- Se quiser, crie em [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials), tipo "OAuth client ID" / "Web application"
-- Preenche a seção `[auth]` (opcional) em `secrets.toml` — veja `.streamlit/secrets.toml.example`
+- Se quiser, crie em [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials), tipo "OAuth client ID" / "Web application" — cadastre `http://localhost:8000/api/auth/google/callback` (ou o domínio real em produção) em "Authorized redirect URIs"
+- Preenche `google_client_id`/`google_client_secret`/`google_redirect_uri` (opcionais) em `backend/.env` — veja `backend/.env.example`
 
 ### 3. Python 3.11+
 
@@ -137,6 +138,11 @@ python -m venv .venv
 .venv\Scripts\activate     # Windows
 # source .venv/bin/activate  # Linux/Mac
 pip install -r backend/requirements.txt
+
+npm install
+npm run build          # compila frontend-src/ -> static/app.js
+# npm run watch para recompilar automaticamente ao editar os .ts
+
 cd backend && uvicorn app.main:app --reload
 ```
 
@@ -153,7 +159,7 @@ Fase 4 do roadmap: a stack de produção (HTTPS automático via [Caddy](https://
 ./scripts/deploy.sh seu-dominio.exemplo.com
 ```
 
-O script gera o `Caddyfile` a partir de `Caddyfile.example` e sobe `docker-compose.prod.yml` (app + Caddy). Se estiver usando o login com Google, ajuste `google_redirect_uri` em `backend/.env` e a credencial OAuth no Google Cloud Console para `https://SEU_DOMINIO/oauth2callback`. Se preferir uma plataforma gerenciada (Railway, Render) que já resolve HTTPS por conta própria, `docker-compose.prod.yml`/Caddy/`deploy.sh` não são necessários — use direto o `Dockerfile`.
+O script gera o `Caddyfile` a partir de `Caddyfile.example` e sobe `docker-compose.prod.yml` (app + Caddy) — o `Dockerfile` compila o frontend TypeScript automaticamente num estágio Node separado antes de montar a imagem final. Se estiver usando o login com Google, ajuste `google_redirect_uri` em `backend/.env` e a credencial OAuth no Google Cloud Console para `https://SEU_DOMINIO/api/auth/google/callback`. Se preferir uma plataforma gerenciada (Railway, Render) que já resolve HTTPS por conta própria, `docker-compose.prod.yml`/Caddy/`deploy.sh` não são necessários — use direto o `Dockerfile`.
 
 Para backup de `data/app.db` (credenciais criptografadas por usuário), agende `./scripts/backup-db.sh` via `cron` — veja o cabeçalho do script para o exemplo de crontab e a variável opcional `BACKUP_REMOTE`.
 
@@ -165,68 +171,43 @@ Detalhes e decisões pendentes (qual servidor/domínio usar) em [ROADMAP.md](ROA
 
 ### 1. Faça Login
 
-Abra o app e crie uma conta na aba "Criar conta" (e-mail + senha) — ou, se o
-botão "Entrar com Google" estiver disponível, use sua conta Google. Na
-primeira vez, cole o JSON da sua conta de serviço do Earth Engine quando
-solicitado — fica salvo criptografado para as próximas sessões (pode ser
-atualizado depois no expander "🔑 Atualizar credenciais do Earth Engine").
+Abra o app e crie uma conta no botão "Entrar / Cadastrar" (e-mail + senha) —
+ou, se o botão "Entrar com Google" estiver disponível, use sua conta Google.
+Depois de logado, cadastre sua credencial do Earth Engine na aba "📍 Análise
+de Paisagem" (seção "🔑 Cadastrar/atualizar credencial do Earth Engine") — só
+é obrigatória se você for usar a fonte MapBiomas; fica salva criptografada
+para as próximas sessões.
 
-> ⚠️ A sessão do login por e-mail/senha é guardada só na aba do navegador
-> (não em cookie): um F5 na página desloga. O login com Google, quando
-> disponível, sobrevive a um refresh.
+A sessão sobrevive a um F5 (refresh token em cookie httpOnly, renovado
+automaticamente via `POST /api/auth/refresh`) — só precisa logar de novo
+depois de ~30 dias sem acessar, ou depois de "Sair".
 
-### 2. Siga o Fluxo da Interface
+### 2. Aba "📍 Análise de Paisagem"
 
-#### **Passo 1: Área de interesse**
+**Passo 1 — Área de interesse**: escolha entre
 
-Escolha entre dois modos:
+- **📌 Ponto + Buffer**: clique no mapa para marcar o ponto e ajuste o raio do buffer (500-20.000m) no slider
+- **🏘️ Limite Municipal (IBGE)**: escolha um estado e um município nos dois seletores — a área de interesse vira o limite territorial oficial do município inteiro
 
-- **📌 Ponto + buffer**: use a ferramenta "Draw a marker" no mapa, selecione **apenas um ponto**, clique em "Export" e faça upload do GeoJSON exportado (ou de um shapefile do ponto compactado em `.zip` — `.shp`+`.shx`+`.dbf`+`.prj`; limite 10MB). **Obrigatório** se a fonte de dados (Passo 2) for MapBiomas; se a fonte for seu próprio GeoTIFF, esse upload é **opcional** — veja "modo raster inteiro" abaixo.
-- **🏘️ Limite municipal (IBGE)**: escolha um estado e um município nos dois seletores (populados pela API do IBGE) — a área de interesse passa a ser o limite territorial oficial do município inteiro, com um preview do polígono no mapa. Não há slider de buffer nesse modo.
+**Passo 2 — Fonte de dados**: escolha entre
 
-#### **Passo 2: Fonte dos dados de cobertura do solo**
+- **MapBiomas (Google Earth Engine)**: usa a collection mais recente disponível (ver [🌍 Classes MapBiomas Suportadas](#-classes-mapbiomas-suportadas)) — exige a credencial do Earth Engine já cadastrada
+- **Meu Raster (GeoTIFF Próprio)**: envie um único raster de cobertura do solo, mesmos códigos de classe do MapBiomas. Se estiver em coordenadas geográficas (graus), é reprojetado automaticamente antes de calcular
 
-Escolha entre:
+**Passo 3 — Calcular**: o botão "🧮 Calcular Métricas da Paisagem" só libera quando os passos 1 e 2 estiverem completos. Os resultados aparecem ao lado: resumo de nível de paisagem (SHDI/densidade de manchas/densidade de borda), gráfico de barras por classe (Chart.js) e a tabela de métricas por classe.
 
-- **MapBiomas (Google Earth Engine)**: padrão, usa a collection mais recente disponível (ver [🌍 Classes MapBiomas Suportadas](#-classes-mapbiomas-suportadas))
-- **Meu raster (GeoTIFF)**: envie um ou **vários** rasters de cobertura do solo (limite 5GB cada). Requisitos:
-  - Mesmos códigos de classe do MapBiomas (1=Floresta, 15=Pastagem etc.)
-  - CRS qualquer: se estiver em coordenadas geográficas (graus), o app reprojeta **automaticamente** antes de calcular (zona UTM do ponto, SIRGAS 2000/Brazil Polyconic no modo raster inteiro, ou a zona UTM do centróide no modo município) — não precisa reprojetar manualmente antes de enviar. O arquivo convertido fica disponível para download na seção de resultados
-  - **Modo ponto, com ponto enviado**: pode cobrir uma área bem maior que o buffer — o app recorta automaticamente a região ao redor do ponto selecionado
-  - **Modo ponto, sem ponto enviado (modo raster inteiro)**: o app calcula as métricas para a extensão **inteira** do raster, sem recorte — útil quando o próprio arquivo já é a área de interesse
-  - **Modo município**: o app recorta automaticamente pelo limite municipal selecionado no Passo 1
-  - **Mais de um arquivo enviado**: cada um é processado separadamente e comparado ao final — se o nome do arquivo tiver um ano (ex.: `Corte_255_2010.tif`), a comparação vira uma série temporal (habilita a predição para anos futuros, ver abaixo); senão, usa a ordem de upload
+### 3. Aba "🧬 Matriz Socioecológica & Clustering"
 
-#### **Passo 3: Configuração do Buffer**
+Assim que você tiver ao menos uma análise salva, clique em "🔄 Atualizar
+Matriz" para ver todas as suas análises agregadas numa tabela. Abaixo,
+escolha K-Means (define quantos clusters, K) ou DBSCAN (define raio de
+vizinhança e mínimo de amostras) e clique em "⚡ Executar Agrupamento ML" —
+mostra os perfis de cada cluster e uma projeção 2D via PCA.
 
-> Só aparece no modo ponto+buffer, com um ponto enviado. No modo raster inteiro ou no modo município, esta etapa é pulada.
+### 4. Aba "📜 Privacidade & LGPD"
 
-- Ajuste o raio do buffer (1.000-10.000m)
-- Buffer maior = área de análise maior
-
-#### **Passo 4: Calcular métricas**
-
-- Clique no botão **"🧮 Calcular métricas"** — o cálculo não roda mais sozinho a cada interação, só quando você pede
-- Acompanhe o andamento em tempo real: cada etapa (preparar área, conectar ao MapBiomas ou recortar o GeoTIFF, calcular métricas) aparece com seu próprio status, dentro de um painel expansível
-- Os resultados ficam visíveis mesmo depois de outras ações na página (ex.: baixar o CSV), sem precisar recalcular
-
-### 3. Visualize os Resultados
-
-**Um arquivo (ou MapBiomas):**
-
-- **Mapa da área**: Visualização do buffer ou do limite municipal aplicado (não aparece no modo raster inteiro, já que não há um ponto/buffer para mostrar)
-- **Classes de uso**: Gráfico das classes encontradas
-- **Métricas detalhadas**: cada métrica aparece em sua própria seção conforme é calculada, com gráfico de barras por classe + tabela, além da tabela consolidada com 12+ métricas
-- **Download**: CSV das métricas e, se o GeoTIFF enviado precisou ser reprojetado automaticamente, também o raster convertido
-
-**Vários arquivos (GeoTIFF):**
-
-- Um resumo compacto por arquivo (mapa de classes + tabela), em painéis expansíveis
-- Uma seção de **comparação entre arquivos**: um gráfico de linha por métrica, uma cor por classe de cobertura do solo, no eixo X o ano (ou a ordem de upload)
-- Se 2+ arquivos tiverem ano identificável no nome: uma seção **"🔮 Predição para anos futuros"** — escolha os anos-alvo e veja a projeção da proporção de cada classe (cadeia de Markov), com tabela + gráfico + CSV
-- Botão **"📥 Baixar relatório (HTML)"**: um arquivo autocontido com o resumo de cada arquivo e os gráficos comparativos — abra no navegador e use **Ctrl+P** para salvar como PDF
-
-**Matriz socioecológica (SSE):** assim que você tiver ao menos uma análise salva, a seção **"🧬 Matriz socioecológica (SSE)"** (logo acima do Passo 1) mostra todas as suas análises agregadas numa matriz — anexe um CSV com variáveis socioeconômicas/hidroclimáticas (casadas por município+ano) para enriquecê-la, veja o heatmap de correlação e baixe o CSV combinado.
+- **Exportar meus Dados**: baixa um JSON com seu histórico e credenciais cadastradas (Art. 18, V)
+- **Eliminação de Conta**: apaga permanentemente conta, credenciais, preferências e histórico salvo (Art. 18, VI) — ação irreversível, pede confirmação
 
 > ⚠️ Se a extração de dados reais do MapBiomas/Earth Engine falhar (ex.: buffer
 > muito pequeno ou região sem cobertura no asset), o processamento é
@@ -238,24 +219,17 @@ Escolha entre:
 
 ## 📍 Onde encontrar seus resultados
 
-Resumo de cada resultado calculado, onde ele aparece na tela e como levá-lo pra fora do app. Tudo que fica marcado como "sim" em **Persiste?** continua visível mesmo depois de clicar em outros botões da página (ex.: um download) — o app guarda o resultado em `st.session_state` em vez de recalcular a cada interação do Streamlit.
+Resumo de cada resultado calculado e onde ele aparece na tela do frontend atual (`static/`, aba única com navegação lateral — ver seção "Estrutura do Projeto" abaixo).
 
-| Resultado | Onde aparece na tela | Persiste? | Como exportar |
-|---|---|---|---|
-| Métrica por classe, uma a uma (gráfico + tabela) | Durante o cálculo, um expander por métrica (revelação progressiva) | Não — é o acompanhamento em tempo real do processamento | Os mesmos valores estão na tabela consolidada abaixo |
-| Tabela consolidada de métricas por classe (12+ métricas) | Seção "📈 Métricas da paisagem", logo abaixo do mapa/gráfico de classes | Sim | Botão **"📥 Download CSV"** |
-| Métricas de nível de paisagem (SHDI, CONTAG, MESH, PD, ED, LSI, SHEI, SIDI, SIEI, PR) | Cards ("🌎 Métricas da paisagem — nível global") logo após a tabela consolidada | Sim | Botão **"📥 Download CSV (métricas de paisagem)"** |
-| Mapa da área de interesse (ponto + buffer) | Coluna esquerda, junto do gráfico de classes (não aparece no modo raster inteiro) | Sim | — (visual; sem export próprio) |
-| Gráfico das classes de cobertura do solo | Coluna direita, junto do mapa da área | Sim | — (visual; sem export próprio) |
-| GeoTIFF reprojetado automaticamente (quando o arquivo enviado estava em graus) | Logo abaixo da tabela consolidada, com uma explicação do porquê | Sim | Botão **"📥 Download GeoTIFF reprojetado"** |
-| Resumo por arquivo (modo **multi-arquivo**: 2+ GeoTIFFs) | Um expander por arquivo — mapa + tabela + cards de paisagem | Sim | Incluído no relatório HTML (linha abaixo) |
-| Comparação entre arquivos (modo multi-arquivo) | Seção "📊 Comparação entre arquivos", um gráfico por métrica, uma cor por classe | Sim | Incluído no relatório HTML (linha abaixo) |
-| Predição para anos futuros (Markov, 2+ anos identificados) | Seção "🔮 Predição para anos futuros", logo após a comparação entre arquivos | Sim | Botão **"📥 Download CSV (predição)"** |
-| Relatório completo do modo multi-arquivo | — | — | Botão **"📥 Baixar relatório (HTML)"** — abra no navegador e use **Ctrl+P** pra salvar como PDF |
-| Matriz socioecológica (SSE): todas as suas análises salvas agregadas | Seção "🧬 Matriz socioecológica (SSE)", acima do fluxo de nova análise | Sim (lê direto do histórico salvo) | Botão **"📥 Download CSV (matriz socioecológica)"** |
-| Métricas por município em lote (shapefile de municípios + 1 GeoTIFF) | Seção "📦 Métricas por município (lote via shapefile)", acima do fluxo de nova análise | Sim | Botão **"📥 Download planilha (.xlsx)"** (abas "paisagem"/"classe") ou os 2 botões de CSV equivalentes |
+| Resultado | Onde aparece na tela | Como exportar |
+|---|---|---|
+| Resumo de métricas de nível de paisagem (SHDI, densidade de manchas, densidade de borda) | Aba "📍 Análise de Paisagem", acima do gráfico, após clicar em "Calcular Métricas" | — (visual; sem export próprio ainda) |
+| Tabela + gráfico de métricas por classe | Mesma aba, ao lado do passo a passo | — (visual; sem export próprio ainda) |
+| Matriz socioecológica (SSE): todas as suas análises salvas agregadas | Aba "🧬 Matriz Socioecológica & Clustering" | — (visual; sem export próprio ainda) |
+| Agrupamento K-Means/DBSCAN (perfis + projeção PCA 2D) | Mesma aba, abaixo da matriz SSE | — (visual; sem export próprio ainda) |
+| Exportação de dados pessoais (Art. 18 LGPD) | Aba "📜 Privacidade & LGPD" | Botão **"Baixar Dados em JSON"** |
 
-> Tudo isso (exceto a matriz socioecológica e o lote por município, que rodam em seções próprias) passa a existir só depois de clicar em **"🧮 Calcular métricas"** (Passo 4) — nada é calculado automaticamente antes disso.
+> **Atenção — funcionalidades documentadas no histórico do projeto mas ainda sem equivalente no frontend atual** (ver [ROADMAP.md](ROADMAP.md) para o detalhamento): comparação entre múltiplos GeoTIFFs, relatório HTML para impressão/PDF, predição de anos futuros via cadeia de Markov, métricas por município em lote via shapefile, e exportação em CSV/XLSX de qualquer resultado. Essas features existiam na versão anterior (Streamlit) e foram descobertas sem porte durante a migração para o backend FastAPI + frontend TypeScript — a lógica de alguma delas (predição de Markov) já foi preservada em `backend/app/services/landscape_core.py`, mas nenhuma tem rota de API nem UI própria hoje.
 
 ---
 
@@ -310,18 +284,23 @@ Organizadas conforme as categorias do [FRAGSTATS](https://fragstats.org/index.ph
 
 ```
 landscapemetrics/
-├── backend/                        # API FastAPI (substitui app.py como ponto de entrada)
+├── backend/                        # API FastAPI — único backend do projeto
 │   ├── app/
 │   │   ├── main.py                 # Monta rotas + serve o frontend estático em "/"
 │   │   ├── api/routes/             # Auth, credenciais, métricas, IBGE, SSE, PRODES, MapBiomas, ANA...
 │   │   ├── core/config.py          # Settings via variáveis de ambiente (.env)
-│   │   └── db/                     # Schema + acesso a data/app.db (SQLite)
+│   │   ├── db/                     # Schema + acesso a data/app.db (SQLite)
+│   │   └── services/               # landscape_core.py, clustering.py, supervised_models.py (lógica pura)
 │   ├── requirements.txt            # Dependências Python do backend
 │   ├── .env.example                # Modelo de configuração de segredos
 │   └── .env                        # Segredos locais (nunca commitado)
-├── static/                         # Frontend (landing page + ferramenta + PWA)
-├── app.py, auth.py, db.py          # Versão anterior (Streamlit) — substituída pelo backend acima
-├── Dockerfile                      # Imagem da aplicação (empacota backend/ + static/)
+├── frontend-src/                   # Fonte TypeScript do frontend (compila para static/app.js)
+│   ├── app.ts
+│   └── globals.d.ts
+├── static/                         # Frontend servido pelo backend (landing page + ferramenta + PWA)
+│   └── app.js                      # Gerado por `npm run build` — nunca editado à mão
+├── package.json, tsconfig.json     # Build do frontend (tsc, sem bundler)
+├── Dockerfile                      # Imagem da aplicação (compila o frontend + empacota backend/static)
 ├── docker-compose.yml              # Orquestração local (app na porta 8000)
 ├── docker-compose.prod.yml         # Stack de produção (app + Caddy/HTTPS)
 ├── Caddyfile.example               # Modelo de config do proxy reverso (produção)
@@ -416,11 +395,7 @@ landscapemetrics/
 
 ### Logs e Debug
 
-Para ativar logs detalhados:
-
-```bash
-streamlit run app.py --logger.level=debug
-```
+Rodando localmente sem Docker (`cd backend && ../.venv/Scripts/uvicorn app.main:app --reload`), os logs aparecem no próprio terminal. Para mais detalhe, ajuste o nível de log do Python (ex.: `logging.basicConfig(level=logging.DEBUG)`) ou rode com `uvicorn ... --log-level debug`. Via Docker: `docker compose logs -f app`.
 
 ---
 
@@ -461,7 +436,8 @@ Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICE
 - [MapBiomas](https://mapbiomas.org/) - Mapeamento anual da cobertura e uso da terra do Brasil
 - [Google Earth Engine](https://earthengine.google.com/) - Plataforma de análise geoespacial
 - [PyLandStats](https://pylandstats.readthedocs.io/) - Biblioteca para métricas de paisagem
-- [Streamlit](https://streamlit.io/) - Framework para aplicações web em Python
+- [FastAPI](https://fastapi.tiangolo.com/) - Framework do backend
+- [TypeScript](https://www.typescriptlang.org/) - Tipagem do frontend
 
 ---
 
@@ -482,7 +458,7 @@ Para suporte, abra uma [issue](https://github.com/ederbtos/landscapemetrics/issu
 
 ### Links Úteis
 
-- [Documentação Streamlit](https://docs.streamlit.io/)
+- [Documentação FastAPI](https://fastapi.tiangolo.com/)
 - [Google Earth Engine Docs](https://developers.google.com/earth-engine/)
 - [PyLandStats Docs](https://pylandstats.readthedocs.io/)
 - [MapBiomas Docs](https://mapbiomas.org/downloads)
