@@ -545,7 +545,14 @@ Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo pl
   nesta rodada** — todos os 622 têm centroide fora de qualquer polígono da malha (provavelmente
   litoral/fronteira), comportamento esperado de "nunca fabricar dado", não um bug.
 - Validar manualmente as rotas novas (`/api/prodes/...`, `/api/ibge/...`, `/api/mapbiomas/...`,
-  `/api/ana/...`) contra o backend rodando, com um token real.
+  `/api/ana/...`) contra o backend rodando, com um token real — **feito**: `/api/prodes/municipio/
+  1507300` e `/api/mapbiomas/serie/2408201` retornam dado real (Amazônia/2008 e série 2004-2023
+  respectivamente), `/api/ibge/municipios/.../malha` retorna o GeoJSON real, `/api/ana/estacoes`
+  retorna `[]` (esperado, ingestão ainda bloqueada). Achado ao validar via `docker run -v` no Git
+  Bash: o MSYS mangling de paths corrompeu o argumento do bind mount (`/app/data` virou
+  `\Program Files\Git\app\data`, mesmo bug por trás do diretório fantasma `secrets.toml;C`
+  encontrado antes) — precisa de `MSYS_NO_PATHCONV=1` e um path tipo `//d/...` para montar
+  corretamente a partir do Git Bash nesta máquina; `docker compose` não sofre disso.
 - Fase 4 (deploy) segue pendente de decisão de infraestrutura do usuário — ver seção abaixo.
 
 ### Fase 4 — Deploy

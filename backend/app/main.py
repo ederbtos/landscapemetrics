@@ -28,6 +28,7 @@ from app.api.routes import credentials as credentials_routes
 from app.api.routes import ibge as ibge_routes
 from app.api.routes import lgpd as lgpd_routes
 from app.api.routes import mapbiomas_stats as mapbiomas_stats_routes
+from app.api.routes import markov as markov_routes
 from app.api.routes import metrics as metrics_routes
 from app.api.routes import prodes as prodes_routes
 from app.api.routes import sse as sse_routes
@@ -74,6 +75,7 @@ app.include_router(supervised_routes.router)
 app.include_router(prodes_routes.router)
 app.include_router(mapbiomas_stats_routes.router)
 app.include_router(ana_routes.router)
+app.include_router(markov_routes.router)
 
 static_dir = os.path.join(PROJECT_ROOT, "static")
 

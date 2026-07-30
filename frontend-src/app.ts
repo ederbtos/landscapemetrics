@@ -84,8 +84,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
 let authMode: 'login' | 'register' = 'login';
 
+// Access token só em memória (nunca localStorage) — reduz a janela de
+// exfiltração via XSS: some ao fechar a aba/recarregar a página, e é
+// recuperado no carregamento seguinte via o refresh token (cookie
+// httpOnly, não acessível a JS) em _tryRefreshAccessToken. `user_email`
+// continua em localStorage só como conveniência de exibição — não é um
+// credencial por si só.
+let accessToken: string | null = null;
+
 function authHeaders(): Record<string, string> {
-  return { 'Authorization': `Bearer ${localStorage.getItem('access_token')}` };
+  return { 'Authorization': `Bearer ${accessToken}` };
 }
 
 // Depois do redirect de /api/auth/google/callback, o access token chega no
@@ -97,16 +105,16 @@ function _consumeGoogleRedirectFragment(): void {
   const token = params.get('access_token');
   const email = params.get('email');
   if (token && email) {
-    localStorage.setItem('access_token', token);
+    accessToken = token;
     localStorage.setItem('user_email', email);
   }
   window.history.replaceState({}, document.title, window.location.pathname);
 }
 
-// Confirma que o access token em localStorage ainda é aceito pela API —
-// sem isso, um token expirado (15min, ver access_token_expire_minutes)
-// deixava a UI achando que a sessão seguia válida só por existir no
-// localStorage, mostrando a ferramenta com uma sessão na prática já morta.
+// Confirma que o access token em memória ainda é aceito pela API — sem
+// isso, um token expirado (15min, ver access_token_expire_minutes) deixava
+// a UI achando que a sessão seguia válida, mostrando a ferramenta com uma
+// sessão na prática já morta.
 async function _isAccessTokenValid(token: string): Promise<boolean> {
   try {
     const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
@@ -117,16 +125,15 @@ async function _isAccessTokenValid(token: string): Promise<boolean> {
 }
 
 // Usa o refresh token (cookie httpOnly) para renovar o access token sem
-// precisar logar de novo — o endpoint já existia em /api/auth/refresh, mas
-// nada no frontend o chamava (resolve de fato o "sessão não sobrevive a F5"
-// do ROADMAP.md).
+// precisar logar de novo — é assim que a sessão sobrevive a F5 mesmo com o
+// access token só em memória (ROADMAP.md, "sessão não sobrevive a F5").
 async function _tryRefreshAccessToken(): Promise<string | null> {
   try {
     const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'same-origin' });
     if (!res.ok) return null;
     const data = await res.json();
-    localStorage.setItem('access_token', data.access_token);
-    return data.access_token;
+    accessToken = data.access_token;
+    return accessToken;
   } catch {
     return null;
   }
@@ -137,15 +144,14 @@ async function checkAuthSession(): Promise<void> {
 
   const container = $('user-session-container');
   const appShell = $('app-shell');
-  let token = localStorage.getItem('access_token');
   let userEmail: string | null = localStorage.getItem('user_email');
 
-  if (token && !(await _isAccessTokenValid(token))) {
-    token = await _tryRefreshAccessToken();
-    if (!token) userEmail = null;
+  if (!accessToken || !(await _isAccessTokenValid(accessToken))) {
+    accessToken = await _tryRefreshAccessToken();
   }
+  if (!accessToken) userEmail = null;
 
-  if (token && userEmail) {
+  if (accessToken && userEmail) {
     container.innerHTML = `
       <span style="font-size: 0.85rem; color: var(--accent-emerald); font-weight: 600;">👤 ${userEmail}</span>
       <button onclick="logout()" class="btn-outline" style="margin-left: 0.5rem; padding: 0.3rem 0.6rem; font-size: 0.8rem;">Sair</button>
@@ -155,7 +161,7 @@ async function checkAuthSession(): Promise<void> {
     loadGeeCredentialsStatus();
     updateStepper();
   } else {
-    localStorage.removeItem('access_token');
+    accessToken = null;
     localStorage.removeItem('user_email');
     container.innerHTML = `<button id="btn-open-login" class="btn-primary" onclick="openAuthModal()">Entrar / Cadastrar</button>`;
     appShell.style.display = 'none';
@@ -817,4 +823,148 @@ async function deleteUserAccount(): Promise<void> {
   } catch (err: any) {
     showToast(err.message, 'error');
   }
+}
+
+// ============================================================================
+// Predição via Cadeias de Markov
+// ============================================================================
+
+let markovChartInstance: any = null;
+
+function toggleMarkovRoiInputs(): void {
+  const type = $<HTMLSelectElement>('markov-roi-type').value;
+  $('markov-point-inputs').style.display = type === 'point' ? 'block' : 'none';
+  $('markov-municipio-inputs').style.display = type === 'municipio' ? 'block' : 'none';
+}
+
+async function runMarkovPrediction(event: Event): Promise<void> {
+  event.preventDefault();
+  if (!requireAuth()) return;
+
+  const btn = $<HTMLButtonElement>('btn-markov-submit');
+  const fileInput = $<HTMLInputElement>('markov-tif-files');
+  const roiType = $<HTMLSelectElement>('markov-roi-type').value;
+  const targetYears = $<HTMLInputElement>('markov-target-years').value;
+
+  if (!fileInput.files || fileInput.files.length < 2) {
+    showToast('Selecione pelo menos 2 arquivos GeoTIFF.', 'error');
+    return;
+  }
+
+  const formData = new FormData();
+  for (let i = 0; i < fileInput.files.length; i++) {
+    formData.append('tif_files', fileInput.files[i]);
+  }
+  formData.append('target_years', targetYears);
+
+  if (roiType === 'point') {
+    formData.append('point_lon', $<HTMLInputElement>('markov-lon').value);
+    formData.append('point_lat', $<HTMLInputElement>('markov-lat').value);
+    formData.append('buffer_dist', $<HTMLInputElement>('markov-buffer').value);
+  } else if (roiType === 'municipio') {
+    formData.append('municipio_codigo', $<HTMLInputElement>('markov-municipio-codigo').value);
+  }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Processando predição (pode demorar)...';
+
+  try {
+    const res = await fetch('/api/markov/predict', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Falha ao executar predição de Markov.');
+    }
+    
+    $('markov-results').style.display = 'block';
+    renderMarkovResults(data);
+    showToast('Predição gerada com sucesso!', 'success');
+  } catch (err: any) {
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⚡ Gerar Predição';
+  }
+}
+
+function renderMarkovResults(data: any): void {
+  const { historico, predicoes, matriz_transicao, anos_alvo, ultimo_ano_observado, classes_mapbiomas } = data;
+  
+  // Render Chart
+  const ctx = ($('markov-chart') as HTMLCanvasElement).getContext('2d');
+  if (markovChartInstance) markovChartInstance.destroy();
+  
+  const allYears = [...historico.map((h: any) => h.ano), ...anos_alvo];
+  // Gather all unique classes
+  const classes = new Set<string>();
+  historico.forEach((h: any) => Object.keys(h.proporcoes).forEach(c => classes.add(c)));
+  Object.values(predicoes).forEach((p: any) => Object.keys(p).forEach(c => classes.add(c)));
+  
+  const datasets = Array.from(classes).map((cls, i) => {
+    const clsName = classes_mapbiomas[cls] || `Classe ${cls}`;
+    const dataPoints = allYears.map(y => {
+      const hist = historico.find((h: any) => h.ano === y);
+      if (hist) return (hist.proporcoes[cls] || 0) * 100;
+      const pred = predicoes[y];
+      if (pred) return (pred[cls] || 0) * 100;
+      return 0;
+    });
+    
+    // generate some colors
+    const colors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#eab308'];
+    return {
+      label: clsName,
+      data: dataPoints,
+      borderColor: colors[i % colors.length],
+      backgroundColor: colors[i % colors.length] + '33',
+      fill: false,
+      tension: 0.1
+    };
+  });
+  
+  markovChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: allYears,
+      datasets: datasets
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: function(context: any) {
+              return context.dataset.label + ': ' + context.parsed.y.toFixed(1) + '%';
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          title: { display: true, text: 'Proporção (%)' },
+          beginAtZero: true
+        }
+      }
+    }
+  });
+  
+  // Render Transition Matrix Table
+  const head = $('markov-table-head');
+  const body = $('markov-table-body');
+  
+  const classesList = Object.keys(matriz_transicao);
+  head.innerHTML = '<th>De \\ Para</th>' + classesList.map(c => `<th>${classes_mapbiomas[c] || c}</th>`).join('');
+  
+  body.innerHTML = classesList.map(rowClass => {
+    const row = matriz_transicao[rowClass];
+    return `
+      <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+        <td><strong>${classes_mapbiomas[rowClass] || rowClass}</strong></td>
+        ${classesList.map(colClass => `<td>${row[colClass] !== undefined ? row[colClass].toFixed(4) : '0.0000'}</td>`).join('')}
+      </tr>
+    `;
+  }).join('');
 }

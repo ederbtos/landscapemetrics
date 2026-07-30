@@ -25,6 +25,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pylandstats as pls
@@ -849,3 +850,22 @@ def _detect_municipio_columns(gdf) -> dict:
         "nome": _find(MUNICIPIO_NAME_COL_CANDIDATES),
         "uf": _find(MUNICIPIO_UF_COL_CANDIDATES),
     }
+
+
+def read_shapefile_from_zip(zip_bytes: bytes) -> gpd.GeoDataFrame:
+    """Lê um shapefile comprimido em .zip (contendo .shp, .shx, .dbf, etc.)
+    diretamente da memória usando fiona/geopandas."""
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp.write(zip_bytes)
+        tmp_path = tmp.name
+
+    try:
+        # A sintaxe zip:// permite que fiona leia shapefiles de dentro do arquivo zip
+        gdf = gpd.read_file(f"zip://{tmp_path}")
+        return gdf
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
