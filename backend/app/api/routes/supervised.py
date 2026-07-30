@@ -1,13 +1,12 @@
 """
 Rota de Aprendizado Supervisionado (Random Forest, XGBoost e LightGBM com Validação Espacial)
 """
-from typing import Any, Dict, List, Optional
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-import pandas as pd
 
 from app.api.deps import get_current_user
-from app.db import metric_results as metric_results_db
+from app.api.routes.sse import _build_sse_matrix
 from app.services import supervised_models
 
 router = APIRouter(prefix="/api/supervised", tags=["supervised"])

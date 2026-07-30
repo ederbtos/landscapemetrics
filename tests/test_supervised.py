@@ -55,6 +55,26 @@ def test_get_spatial_groups(sample_spatial_df):
     assert len(np.unique(groups)) == 5
 
 
+def test_get_spatial_groups_falls_back_to_municipio_when_points_are_null():
+    """Regressão: análises só por município (sem ponto+buffer) têm as
+    colunas point_lat/point_lon presentes na matriz SSE, mas totalmente
+    nulas — get_spatial_groups checava só a presença da coluna, preenchia
+    com fillna(0.0) e mandava tudo pro KMeans, que degenerava num único
+    cluster (todos os pontos em (0,0)) e quebrava o GroupKFold seguinte com
+    "n_splits maior que o número de grupos" para qualquer usuário nessa
+    situação (ex.: só análises via lote por município)."""
+    df = pd.DataFrame({
+        "point_lat": [None, None, None, None],
+        "point_lon": [None, None, None, None],
+        "municipio_codigo": ["5200050", "5200050", "5200100", "5200100"],
+    })
+
+    groups = get_spatial_groups(df, n_splits=2)
+
+    assert len(groups) == 4
+    assert len(np.unique(groups)) == 2
+
+
 def test_train_random_forest(sample_spatial_df):
     feature_cols = ["pct_Floresta", "pct_Pastagem", "SHDI", "edge_density"]
     res = train_supervised_model(

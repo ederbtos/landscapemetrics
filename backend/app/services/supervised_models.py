@@ -75,13 +75,20 @@ def get_spatial_groups(df: pd.DataFrame, n_splits: int = 5, random_state: int = 
 
     effective_splits = max(2, min(n_splits, n_samples))
 
+    # As colunas point_lat/point_lon existem na matriz SSE mesmo para análises
+    # por município (sem ponto) — checar só a presença da coluna, sem checar
+    # se os valores existem de verdade, agrupava tudo em (0, 0) via fillna e
+    # o KMeans degenerava num único cluster (n_clusters pedido > clusters
+    # reais), quebrando o GroupKFold seguinte com "n_splits maior que o
+    # número de grupos" para qualquer usuário com análises só por
+    # município/raster inteiro (sem ponto+buffer).
     if "point_lat" in df.columns and "point_lon" in df.columns:
-        coords = df[["point_lat", "point_lon"]].fillna(0.0).values
-        if coords.shape[0] >= effective_splits:
+        coords_df = df[["point_lat", "point_lon"]]
+        if coords_df.notna().all(axis=None) and len(coords_df) >= effective_splits:
             km = KMeans(n_clusters=effective_splits, random_state=random_state, n_init=10)
-            return km.fit_predict(coords)
+            return km.fit_predict(coords_df.values)
 
-    if "municipio_codigo" in df.columns:
+    if "municipio_codigo" in df.columns and df["municipio_codigo"].notna().any():
         codes = df["municipio_codigo"].astype(str).values
         le = LabelEncoder()
         return le.fit_transform(codes)
