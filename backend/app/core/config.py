@@ -56,6 +56,23 @@ class Settings(BaseSettings):
     dev_auth_bypass_email: str | None = None
 
 
+def assert_dev_bypass_is_safe(settings: Settings) -> None:
+    """Recusa subir se o bypass de login temporário estiver configurado junto
+    com `cookie_secure=true` — o valor padrão de produção (ver comentário
+    acima do campo), e o mesmo sinal que `backend/.env.example` documenta
+    como "produção atrás do Caddy". Não existe uma flag de ambiente
+    separada no projeto; `cookie_secure` já é o proxy usado para
+    dev-local vs. produção, então reaproveitamos em vez de introduzir outra.
+    """
+    if settings.dev_auth_bypass_email and settings.cookie_secure:
+        raise RuntimeError(
+            "dev_auth_bypass_email está configurado junto com cookie_secure=true "
+            "(configuração de produção). Esse bypass de login é só para "
+            "desenvolvimento local sem HTTPS — remova dev_auth_bypass_email de "
+            "backend/.env antes de subir este ambiente."
+        )
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

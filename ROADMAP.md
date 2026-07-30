@@ -437,7 +437,8 @@
       (`_detect_municipio_columns`) foi portada — o resto depende de `uploaded_file_to_gdf`
       (também nunca portada, sem uso em lugar nenhum do backend hoje) e de persistência
       (`db.get_metric_result`/`save_metric_result`, o `db.py` que saiu) — esforço de port maior,
-      separado, não feito aqui.
+      separado, não feito aqui. **Endpoint e UI implementados em seguida (2026-07-30)**: ver
+      entrada própria abaixo.
   - **Bug real encontrado e corrigido ao escrever o teste da Matriz SSE**: `backend/app/api/routes/
     sse.py::_build_sse_matrix` iterava nomes de MÉTRICA (`class_metrics.columns`) e pegava só
     `.iloc[0]` (a primeira linha) — para qualquer análise com mais de uma classe presente (o caso
@@ -459,6 +460,37 @@
     suporte só existia em `db.py::_get_db_url()` (Streamlit-era), que esta migração apagou. Ou
     seja, o backend nunca teve de fato suporte a Postgres — só fica registrado aqui, não é escopo
     resolver.
+- **Bug de import faltando no endpoint supervisionado (2026-07-30)**: `POST /api/supervised/train`
+  chamava `_build_sse_matrix()` sem importar de `app.api.routes.sse` — quebrava com `NameError` em
+  toda chamada real, sem nenhum teste de rota cobrindo o caminho de verdade (achado por uma
+  varredura com `pyflakes` no backend inteiro, motivada pelo mesmo padrão do bug do `numpy` no
+  `markov.py`, ver acima). Também corrigido `get_spatial_groups()`: só checava se as colunas
+  `point_lat`/`point_lon` existiam, não se estavam preenchidas — qualquer usuário com análises
+  salvas por município (em vez de ponto+buffer, o formato normal de resultados de lote) tinha essas
+  colunas presentes porém nulas; o `fillna(0.0)` colocava todas as linhas na mesma coordenada
+  (0,0), colapsando o KMeans num único cluster e derrubando o `GroupKFold` logo em seguida. Agora
+  cai para agrupamento por município quando as coordenadas não estão de fato populadas. Coberto por
+  um teste end-to-end real da rota (análises sintéticas salvas, chamada HTTP real) e um teste
+  unitário direto do fallback de agrupamento.
+- **Métricas por município em lote — endpoint e UI (2026-07-30)**: porta o recurso que tinha
+  ficado órfão na migração do Streamlit (item acima) — a lógica pura (parsing de shapefile,
+  detecção de coluna) já tinha ido para `landscape_core.py`, mas nada expunha isso como rota ou
+  tela. Pedido diretamente pelo usuário para rodar cálculos de lote reais.
+  - Novo `POST /api/municipio-batch/run`: aceita um shapefile de municípios (`.zip`/`.geojson`
+    único ou os componentes soltos `.shp`+`.shx`+`.dbf`+`.prj`) mais um GeoTIFF, calcula métricas
+    de fragmentação para cada município contra esse raster. Reaproveita o cache de
+    `metric_results` por fingerprint e isola erro por município (um polígono ruim não derruba o
+    lote inteiro) — mesma filosofia do lote antigo do `app.py`.
+  - Nova aba "Lote por Município" no frontend.
+  - **Bug real encontrado ao escrever o teste end-to-end**: o PyLandStats retorna `NaN` para
+    métricas como contágio quando a paisagem tem poucas classes (comum em municípios pequenos
+    dentro de um lote), e o `JSONResponse` do Starlette usa `allow_nan=False` — qualquer resultado
+    assim quebrava a requisição inteira com "Out of range float values are not JSON compliant".
+    Adicionado `sanitize_for_json()`, aplicado aqui e também em `/api/metrics/calculate`, que tinha
+    o mesmo bug latente (não teria aparecido sem o caso de município pequeno do lote).
+  - Coberto por `tests/test_backend_api_municipio_batch.py` e um novo teste em
+    `tests/test_landscape_core_metrics.py`. Suíte completa: **113 testes passando** (116 após a
+    trava do bypass de login, ver entrada abaixo).
 
 ### 🔄 Mudança de arquitetura (2026-07-04): login por e-mail/senha + JWT, com Google OAuth opcional
 
@@ -561,6 +593,20 @@ Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo pl
   encontrado antes) — precisa de `MSYS_NO_PATHCONV=1` e um path tipo `//d/...` para montar
   corretamente a partir do Git Bash nesta máquina; `docker compose` não sofre disso.
 - Fase 4 (deploy) segue pendente de decisão de infraestrutura do usuário — ver seção abaixo.
+- **Débito técnico temporário, agora com trava automática (2026-07-30)**: `dev_auth_bypass_email`
+  (`backend/app/core/config.py`) + o short-circuit em `get_current_user`
+  (`backend/app/api/deps.py`) permitem pular login por completo quando essa variável está setada em
+  `backend/.env` — adicionado a pedido do usuário para rodar cálculos reais ponta-a-ponta enquanto
+  o fluxo de conta/sessão era finalizado. Off por padrão (variável ausente = sem bypass). Como o
+  projeto não tem uma flag de ambiente própria, `cookie_secure` (default `true` = perfil de
+  produção, atrás do Caddy) já era o proxy usado para dev-local vs. produção — reaproveitado em
+  `assert_dev_bypass_is_safe` (`backend/app/core/config.py`), chamado no boot do `main.py`: o
+  processo agora recusa subir (`RuntimeError`) se `dev_auth_bypass_email` estiver setado junto com
+  `cookie_secure=true`, em vez de depender de alguém lembrar de remover a variável manualmente antes
+  do deploy. Continua sendo necessário apagar o bypass de vez quando o fluxo de conta/sessão for
+  finalizado — a trava só evita que ele vaze para produção sem querer, não substitui a remoção.
+  Coberto por `tests/test_backend_config.py` (3 testes: recusa com cookie seguro, permite com
+  cookie inseguro, permite sem bypass configurado).
 
 ### Fase 4 — Deploy
 

@@ -35,12 +35,13 @@ from app.api.routes import prodes as prodes_routes
 from app.api.routes import sse as sse_routes
 from app.api.routes import supervised as supervised_routes
 from app.api.routes import user as user_routes
-from app.core.config import get_settings
+from app.core.config import assert_dev_bypass_is_safe, get_settings
 from app.db.schema import init_db
 
 app = FastAPI(title="Landscape Metrics Extractor API")
 
 settings = get_settings()
+assert_dev_bypass_is_safe(settings)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
