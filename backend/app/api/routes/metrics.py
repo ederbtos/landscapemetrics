@@ -10,6 +10,7 @@ from app.api.deps import get_current_user
 from app.db import credentials as credentials_db
 from app.db import metric_results as metric_results_db
 from app.services import landscape as landscape_service
+from app.services import landscape_core
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +92,10 @@ async def calculate_metrics(
         ano=result["ano"],
     )
 
-    return {
+    return landscape_core.sanitize_for_json({
         "label": result["label"],
         "fingerprint": result["fingerprint"],
         "ano": result["ano"],
         "class_metrics": class_metrics_df.to_dict(orient="index"),
         "landscape_metrics": result["landscape_metrics"],
-    }
+    })

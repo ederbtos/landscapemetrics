@@ -156,3 +156,30 @@ def test_compute_fingerprint_different_buffer_produces_different_fingerprint():
         "MapBiomas (Google Earth Engine)", point_lonlat=(-47.9292, -15.7801), buffer_dist=5000,
     )
     assert fp1 != fp2
+
+
+# --- sanitize_for_json (evita "Out of range float values are not JSON
+# compliant" do JSONResponse do FastAPI/Starlette, allow_nan=False) ---
+
+
+def test_sanitize_for_json_replaces_nan_and_inf_with_none():
+    data = {"a": float("nan"), "b": float("inf"), "c": float("-inf"), "d": 1.5}
+    assert landscape_core.sanitize_for_json(data) == {"a": None, "b": None, "c": None, "d": 1.5}
+
+
+def test_sanitize_for_json_recurses_into_nested_dicts_and_lists():
+    data = {"outer": {"inner": [1.0, float("nan"), {"deep": float("inf")}]}}
+    assert landscape_core.sanitize_for_json(data) == {"outer": {"inner": [1.0, None, {"deep": None}]}}
+
+
+def test_compute_landscape_metrics_single_class_has_no_nan_values():
+    """Regressão: com 1 classe só (raster degenerado, comum num município
+    pequeno num lote), métricas como contagion vêm NaN direto do
+    PyLandStats — sem sanitização, isso quebrava qualquer rota que
+    retornasse o resultado (ValueError na serialização JSON)."""
+    arr = np.full((10, 10), 15, dtype="uint8")
+    ls, _ = landscape_core._compute_class_metrics(arr, (30, 30))
+
+    values = landscape_core._compute_landscape_metrics(ls)
+
+    assert not any(isinstance(v, float) and np.isnan(v) for v in values.values())

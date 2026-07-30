@@ -996,3 +996,92 @@ function renderMarkovResults(data: any): void {
     `;
   }).join('');
 }
+
+// Métricas por Município em Lote (shapefile de municípios + 1 GeoTIFF)
+async function runMunicipioBatch(event: Event): Promise<void> {
+  event.preventDefault();
+  if (!requireAuth()) return;
+
+  const btn = $<HTMLButtonElement>('btn-municipio-batch-submit');
+  const shpInput = $<HTMLInputElement>('municipio-batch-shp-files');
+  const tifInput = $<HTMLInputElement>('municipio-batch-tif-file');
+
+  if (!shpInput.files || shpInput.files.length === 0) {
+    showToast('Selecione o(s) arquivo(s) do shapefile de municípios.', 'error');
+    return;
+  }
+  if (!tifInput.files || tifInput.files.length !== 1) {
+    showToast('Selecione um único arquivo GeoTIFF.', 'error');
+    return;
+  }
+
+  const formData = new FormData();
+  for (let i = 0; i < shpInput.files.length; i++) {
+    formData.append('municipio_files', shpInput.files[i]);
+  }
+  formData.append('tif_file', tifInput.files[0]);
+
+  const codeCol = $<HTMLInputElement>('municipio-batch-code-col').value.trim();
+  const nameCol = $<HTMLInputElement>('municipio-batch-name-col').value.trim();
+  const ufCol = $<HTMLInputElement>('municipio-batch-uf-col').value.trim();
+  if (codeCol) formData.append('code_col', codeCol);
+  if (nameCol) formData.append('name_col', nameCol);
+  if (ufCol) formData.append('uf_col', ufCol);
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Processando lote (pode demorar bastante)...';
+
+  try {
+    const res = await fetch('/api/municipio-batch/run', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Falha ao processar o lote de municípios.');
+    }
+
+    $('municipio-batch-results').style.display = 'block';
+    renderMunicipioBatchResults(data);
+    showToast(`Lote concluído: ${data.sucesso}/${data.total_municipios} municípios processados.`, 'success');
+  } catch (err: any) {
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⚡ Calcular Lote';
+  }
+}
+
+function renderMunicipioBatchResults(data: any): void {
+  const summary = $('municipio-batch-summary');
+  const head = $('municipio-batch-table-head');
+  const body = $('municipio-batch-table-body');
+
+  const erroCount = (data.erros || []).length;
+  summary.innerHTML = `
+    <div style="background: rgba(16,185,129,0.1); border: 1px solid var(--accent-emerald); padding: 1rem; border-radius: 8px;">
+      <b>${data.sucesso}</b> de <b>${data.total_municipios}</b> municípios processados com sucesso
+      ${erroCount > 0 ? ` • <span style="color: #ef4444;">${erroCount} com erro</span>` : ''}
+    </div>
+  `;
+
+  const rows: any[] = data.landscape_rows || [];
+  if (rows.length === 0) {
+    head.innerHTML = '<th>Nenhum município processado com sucesso</th>';
+    body.innerHTML = '';
+    return;
+  }
+
+  const cols = Object.keys(rows[0]);
+  head.innerHTML = cols.map(c => `<th>${c}</th>`).join('');
+  body.innerHTML = rows.map(r => `
+    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+      ${cols.map(c => {
+        const v = r[c];
+        const display = typeof v === 'number' ? v.toFixed(2) : (v !== null && v !== undefined ? v : '-');
+        return `<td style="padding: 0.5rem;">${display}</td>`;
+      }).join('')}
+    </tr>
+  `).join('');
+}

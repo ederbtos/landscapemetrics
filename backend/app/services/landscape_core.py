@@ -18,9 +18,11 @@ aplicável, são repassados via callbacks opcionais (`on_progress`, `notify`,
 """
 import functools
 import hashlib
+import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -66,6 +68,7 @@ ALLOWED_EXTENSIONS = {'.geojson', '.zip'}  # .zip = shapefile compactado (.shp+.
 MAX_TIF_SIZE = 5 * 1024 * 1024 * 1024  # 5GB
 ALLOWED_TIF_EXTENSIONS = {'.tif', '.tiff'}
 WHOLE_RASTER_MAX_PIXELS = 50_000_000  # acima disso, reamostra por moda antes de reprojetar (cabe na memória do processo)
+MAX_MUNICIPIOS_SHP_SIZE = 50 * 1024 * 1024  # 50MB — malha municipal de uma UF inteira pode passar dos 10MB do MAX_FILE_SIZE padrão
 
 IBGE_MALHAS_BASE = "https://servicodados.ibge.gov.br/api/v3/malhas"
 IBGE_REQUEST_TIMEOUT = 15  # segundos — evita travar indefinidamente se a API do IBGE ficar lenta/indisponível
@@ -206,6 +209,159 @@ def validate_file_upload(uploaded_file, allowed_extensions=None, max_size=None):
         return False, "Nome do arquivo contém caracteres não permitidos"
 
     return True, "Arquivo válido"
+
+
+def uploaded_file_to_gdf(data, max_size=None):
+    """Converte arquivo enviado (GeoJSON ou shapefile compactado em .zip)
+    para GeoDataFrame, com validações de segurança. `max_size`, se
+    informado, sobrepõe o limite padrão (`MAX_FILE_SIZE`) — usado pelo
+    upload do shapefile de municípios (Métricas por município em lote), que
+    pode ser bem maior que um GeoJSON/shapefile de um único ponto (ver
+    `MAX_MUNICIPIOS_SHP_SIZE`)."""
+    try:
+        is_valid, message = validate_file_upload(data, max_size=max_size)
+        if not is_valid:
+            raise ValueError(f"Arquivo inválido: {message}")
+
+        file_extension = Path(data.name).suffix.lower()
+        file_id = str(uuid.uuid4())
+        safe_filename = f"{file_id}{file_extension}"
+        file_path = os.path.join(tempfile.gettempdir(), safe_filename)
+
+        temp_dir = Path(tempfile.gettempdir()).resolve()
+        file_path_resolved = Path(file_path).resolve()
+        if not str(file_path_resolved).startswith(str(temp_dir)):
+            raise ValueError("Caminho de arquivo inseguro")
+
+        try:
+            with open(file_path, "wb") as file:
+                file.write(data.getbuffer())
+
+            try:
+                if file_extension == ".zip":
+                    # Shapefile compactado (.shp+.shx+.dbf+.prj dentro do .zip):
+                    # lido direto de dentro do arquivo via VSI do GDAL (prefixo
+                    # "zip://"), sem precisar extrair os componentes em disco antes.
+                    gdf = gpd.read_file(f"zip://{file_path}")
+                else:
+                    gdf = gpd.read_file(file_path)
+            except Exception as read_error:
+                if file_extension == ".zip":
+                    raise ValueError(
+                        f"Não foi possível ler o shapefile enviado: {read_error}. "
+                        "Confirme que o .zip contém .shp, .shx, .dbf (e .prj, se possível) "
+                        "na raiz do arquivo."
+                    ) from read_error
+
+                # Fallback: tenta ler como JSON puro e converter (cobre GeoJSONs
+                # que o driver padrão do GDAL rejeita por algum motivo).
+                logger.warning(f"Erro na leitura padrão: {read_error}. Tentando método alternativo...")
+
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    geojson_data = json.load(f)
+
+                from shapely.geometry import Point as _Point
+
+                features = geojson_data.get('features', [])
+                if not features:
+                    raise ValueError("Nenhuma feature encontrada no GeoJSON")
+
+                geometries = []
+                properties_list = []
+                for feature in features:
+                    geom_data = feature.get('geometry', {})
+                    if geom_data.get('type') == 'Point':
+                        coords = geom_data.get('coordinates', [])
+                        if len(coords) >= 2:
+                            geometries.append(_Point(coords[0], coords[1]))
+                            properties_list.append(feature.get('properties', {}))
+
+                if not geometries:
+                    raise ValueError("Nenhuma geometria válida encontrada")
+
+                gdf = gpd.GeoDataFrame(properties_list, geometry=geometries, crs='EPSG:4326')
+
+            if gdf.empty:
+                raise ValueError("Arquivo GeoJSON vazio")
+
+            if gdf.crs is None:
+                gdf = gdf.set_crs('EPSG:4326')
+
+            logger.info(f"Arquivo processado com sucesso: {len(gdf)} geometrias")
+            return gdf
+        finally:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception as cleanup_error:
+                    logger.warning(f"Erro ao limpar arquivo temporário: {cleanup_error}")
+    except Exception as e:
+        logger.error(f"Erro ao processar arquivo: {e}")
+        raise
+
+
+MUNICIPIO_SHP_COMPONENT_EXTENSIONS = {".shp", ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".qix", ".xml"}
+
+
+def _municipio_files_to_gdf(uploaded_files, max_size=None):
+    """Lê o(s) arquivo(s) enviados para a área de estudo do lote por
+    município (Métricas por município em lote) como um GeoDataFrame. Aceita
+    dois formatos, porque muitos usuários não conseguem zipar um shapefile
+    do jeito que o driver `zip://` do GDAL espera — ferramentas de
+    compressão comuns colocam os componentes dentro de uma subpasta em vez
+    de na raiz do .zip, e o GDAL falha com "não reconhecido como um formato
+    de arquivo suportado" mesmo com .shp/.shx/.dbf corretos:
+
+    - Um único arquivo `.zip` ou `.geojson`: delega para
+      `uploaded_file_to_gdf` (caminho já existente, inalterado).
+    - Vários arquivos soltos (.shp + .shx + .dbf, .prj/.cpg opcionais etc.,
+      selecionados juntos no seletor do navegador — equivalente a "apontar
+      a pasta"): salva todos com o nome original num diretório temporário
+      próprio (os componentes precisam do mesmo nome-base lado a lado) e
+      abre o .shp diretamente via `gpd.read_file`, sem passar pelo driver
+      de zip."""
+    max_size = max_size or MAX_MUNICIPIOS_SHP_SIZE
+
+    if len(uploaded_files) == 1 and Path(uploaded_files[0].name).suffix.lower() in (".zip", ".geojson"):
+        return uploaded_file_to_gdf(uploaded_files[0], max_size=max_size)
+
+    total_size = sum(f.size for f in uploaded_files)
+    if total_size > max_size:
+        raise ValueError(f"Arquivos muito grandes juntos. Máximo: {max_size // (1024 * 1024)}MB")
+
+    shp_files = [f for f in uploaded_files if Path(f.name).suffix.lower() == ".shp"]
+    if not shp_files:
+        raise ValueError(
+            "Nenhum arquivo .shp encontrado — selecione todos os componentes do shapefile "
+            "juntos (.shp, .shx, .dbf e, se possível, .prj)."
+        )
+    if len(shp_files) > 1:
+        raise ValueError("Envie os componentes de um único shapefile por vez (encontrado mais de um .shp).")
+
+    tmp_dir = Path(tempfile.gettempdir()) / f"municipios_{uuid.uuid4()}"
+    tmp_dir.mkdir(parents=True)
+    try:
+        for uploaded in uploaded_files:
+            safe_name = Path(uploaded.name).name  # descarta qualquer componente de diretório
+            if safe_name != uploaded.name or ".." in uploaded.name:
+                raise ValueError(f"Nome de arquivo inválido: {uploaded.name}")
+            ext = Path(safe_name).suffix.lower()
+            if ext not in MUNICIPIO_SHP_COMPONENT_EXTENSIONS:
+                raise ValueError(f"Extensão não permitida entre os componentes do shapefile: {safe_name}")
+            with open(tmp_dir / safe_name, "wb") as out:
+                out.write(uploaded.getbuffer())
+
+        shp_path = tmp_dir / Path(shp_files[0].name).name
+        missing = [ext for ext in (".shx", ".dbf") if not (tmp_dir / (shp_path.stem + ext)).exists()]
+        if missing:
+            raise ValueError(f"Faltam componentes obrigatórios do shapefile: {', '.join(missing)}")
+
+        gdf = gpd.read_file(shp_path)
+        if gdf.crs is None:
+            gdf = gdf.set_crs("EPSG:4326")
+        return gdf
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _utm_epsg_for_lonlat(lon: float, lat: float) -> int:
@@ -602,6 +758,23 @@ def _compute_class_metrics(np_arr_mb, resolution, notify=None, on_metric_progres
     return ls, class_metrics_df_sub
 
 
+def sanitize_for_json(value):
+    """Substitui NaN/±Infinity por `None`, recursivamente, em dicts/listas —
+    `float('nan')` é um valor Python válido (e comum em métricas do
+    PyLandStats com poucas classes/manchas), mas o `JSONResponse` do
+    FastAPI/Starlette serializa com `allow_nan=False` (JSON estrito),
+    levantando `ValueError: Out of range float values are not JSON
+    compliant` para qualquer resposta que contenha um. Usar em qualquer
+    dict/lista de métricas antes de devolver como resposta HTTP."""
+    if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+        return None
+    if isinstance(value, dict):
+        return {k: sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [sanitize_for_json(v) for v in value]
+    return value
+
+
 def _compute_landscape_metrics(ls) -> dict:
     """Calcula métricas de nível de PAISAGEM (um único valor global, não
     por classe) — diversidade e agregação da paisagem como um todo,
@@ -639,7 +812,14 @@ def _compute_landscape_metrics(ls) -> dict:
     except Exception as diversity_error:
         logger.warning(f"Erro ao calcular índices de diversidade manuais: {diversity_error}")
 
-    return values
+    # Métricas vindas direto do PyLandStats (contagion, effective_mesh_size
+    # etc.) podem vir NaN com poucas classes/manchas (ex.: só 1 classe
+    # presente) — diferente das fórmulas manuais acima, que já usam `None`
+    # nesse caso. `FastAPI`/Starlette serializam a resposta com
+    # `allow_nan=False` (JSON estrito), então um NaN cru aqui quebra a
+    # request inteira com "Out of range float values are not JSON
+    # compliant" — normalizado para `None` (sempre serializável).
+    return sanitize_for_json(values)
 
 
 def _extract_year_from_filename(filename: str):

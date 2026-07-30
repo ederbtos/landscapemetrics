@@ -69,6 +69,9 @@
       <button class="tab-btn" onclick="switchTab(event, 'tab-markov')">
         <span class="tab-btn-icon">🔮</span> Predição (Markov)
       </button>
+      <button class="tab-btn" onclick="switchTab(event, 'tab-municipio-batch')">
+        <span class="tab-btn-icon">📦</span> Lote por Município
+      </button>
       <button class="tab-btn" onclick="switchTab(event, 'tab-ajuda')">
         <span class="tab-btn-icon">❓</span> Ajuda & Guia
       </button>
@@ -360,6 +363,60 @@
             <table id="markov-transition-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
               <thead><tr id="markov-table-head" style="border-bottom: 1px solid var(--border-color); text-align: left;"></tr></thead>
               <tbody id="markov-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ABA: Lote por Município (shapefile + 1 GeoTIFF) -->
+    <section id="tab-municipio-batch" class="tab-content" style="display: none;">
+      <div class="glass-card">
+        <div class="card-title">📦 Métricas por Município em Lote</div>
+        <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem;">
+          Envie o shapefile de municípios (ex.: malha do IBGE de uma UF) e um único GeoTIFF de cobertura do solo — calcula as métricas de fragmentação de TODOS os municípios do shapefile contra o mesmo raster.
+        </p>
+
+        <form id="municipio-batch-form" onsubmit="runMunicipioBatch(event)">
+          <div class="form-group">
+            <label>Shapefile dos municípios (.zip, ou selecione .shp+.shx+.dbf+.prj juntos):</label>
+            <input type="file" id="municipio-batch-shp-files" multiple accept=".zip,.geojson,.shp,.shx,.dbf,.prj,.cpg" required>
+            <small style="color: var(--text-muted); display: block; margin-top: 0.25rem;">
+              Dica: se o .zip não for reconhecido, selecione os arquivos soltos (.shp, .shx, .dbf e, se possível, .prj) juntos no seletor.
+            </small>
+          </div>
+
+          <div class="form-group">
+            <label>GeoTIFF de cobertura do solo (1 arquivo, cobrindo todos os municípios):</label>
+            <input type="file" id="municipio-batch-tif-file" accept=".tif,.tiff" required>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+            <div class="form-group">
+              <label>Coluna do código (opcional — autodetectado):</label>
+              <input type="text" id="municipio-batch-code-col" placeholder="Ex: CD_MUN">
+            </div>
+            <div class="form-group">
+              <label>Coluna do nome (opcional):</label>
+              <input type="text" id="municipio-batch-name-col" placeholder="Ex: NM_MUN">
+            </div>
+            <div class="form-group">
+              <label>Coluna da UF (opcional):</label>
+              <input type="text" id="municipio-batch-uf-col" placeholder="Ex: SIGLA_UF">
+            </div>
+          </div>
+
+          <button type="submit" id="btn-municipio-batch-submit" class="btn-primary" style="width: 100%;">
+            ⚡ Calcular Lote
+          </button>
+        </form>
+
+        <div id="municipio-batch-results" style="display: none; margin-top: 2rem;">
+          <div id="municipio-batch-summary" style="margin-bottom: 1rem;"></div>
+          <div style="overflow-x: auto;">
+            <table id="municipio-batch-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+              <thead><tr id="municipio-batch-table-head" style="border-bottom: 1px solid var(--border-color); text-align: left;"></tr></thead>
+              <tbody id="municipio-batch-table-body"></tbody>
             </table>
           </div>
         </div>
