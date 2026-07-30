@@ -421,8 +421,15 @@
   - **3 features "concluídas" no histórico só existiam em `app.py`, sem rota de API nem UI no
     frontend novo** (descoberto ao portar os testes, não durante o resto da migração):
     - **Predição de anos futuros (Markov)**: pequena e autocontida (2 funções puras, sem
-      dependência de outra coisa) — movida para `landscape_core.py` com seus testes. Ainda sem
-      endpoint/UI própria.
+      dependência de outra coisa) — movida para `landscape_core.py` com seus testes. **Endpoint e
+      UI implementados em seguida (2026-07-30)**: `POST /api/markov/predict`
+      (`backend/app/api/routes/markov.py`) + aba "🔮 Predição (Markov)" no frontend — aceita 2+
+      GeoTIFFs (ponto+buffer, município ou raster inteiro). Encontrado ao revisar: `numpy` nunca
+      foi importado no arquivo da rota apesar de `np.unique` ser chamado — os 3 testes iniciais só
+      cobriam validação de entrada (erro 400), nenhum chegava no caminho real de extração, que
+      quebraria com `NameError` em qualquer uso de verdade. Corrigido; novo teste
+      (`test_markov_predict_real_files_end_to_end`) exercita o caminho real com GeoTIFFs sintéticos
+      para não deixar essa lacuna de cobertura se repetir.
     - **Relatório HTML multi-arquivo + gráfico de comparação (matplotlib)**: descartada — o
       frontend novo renderiza gráficos no cliente (Chart.js), sem necessidade clara de um
       equivalente server-side.

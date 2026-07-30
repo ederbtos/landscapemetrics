@@ -78,3 +78,31 @@ async def test_markov_predict_invalid_filenames(test_client):
     response = await test_client.post("/api/markov/predict", headers=headers, files=files, data={"target_years": "2030"})
     assert response.status_code == 400
     assert "Não foi possível identificar o ano" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_markov_predict_real_files_end_to_end(test_client):
+    """Regressão: as 3 verificações acima só cobrem validação de entrada
+    (erro 400) — nenhuma delas chegava no caminho real de extração/predição,
+    que tinha um `NameError: name 'np' is not defined` (numpy nunca era
+    importado neste arquivo, só usado via `np.unique`) e só apareceria com
+    2+ GeoTIFFs válidos de anos distintos, o uso real do endpoint."""
+    from tests.helpers import make_test_tif
+
+    token = await _register_user(test_client)
+    headers = {"Authorization": f"Bearer {token}"}
+    tif_2010 = make_test_tif(fill_value=3, width=20, height=20)
+    tif_2020 = make_test_tif(fill_value=15, width=20, height=20)
+    files = [
+        ("tif_files", ("raster_2010.tif", tif_2010, "image/tiff")),
+        ("tif_files", ("raster_2020.tif", tif_2020, "image/tiff")),
+    ]
+    response = await test_client.post(
+        "/api/markov/predict", headers=headers, files=files, data={"target_years": "2030"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ultimo_ano_observado"] == 2020
+    assert data["anos_alvo"] == [2030]
+    assert len(data["historico"]) == 2
+    assert "2030" in data["predicoes"] or 2030 in data["predicoes"]

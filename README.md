@@ -8,7 +8,7 @@
 > - **Backend REST API em Python (FastAPI)** (`backend/app/main.py`): Autenticação JWT com cookie HttpOnly, credenciais GEE criptografadas (Fernet), histórico multi-tenant, IBGE API e LGPD.
 > - **Frontend Web App em TypeScript (`static/`, compilado de `frontend-src/`)**: Interface Glassmorphism Dark Mode com mapas Leaflet, gráficos Chart.js, PWA Mobile, acessibilidade VLibras/WCAG 2.2 AA e Avatares 3D (**Maria Júlia & Pedro**).
 > - **Machine Learning & Analytics**:
->   - **Não Supervisionado**: K-Means & DBSCAN com projeção 2D PCA, Curva do Cotovelo e Silhouette Score. Predição por Cadeia de Markov: lógica preservada em `landscape_core.py`, mas **sem rota de API/UI própria ainda** — ver ROADMAP.md.
+>   - **Não Supervisionado**: K-Means & DBSCAN com projeção 2D PCA, Curva do Cotovelo e Silhouette Score. Predição de anos futuros por Cadeia de Markov (`POST /api/markov/predict`, aba "🔮 Predição (Markov)" no frontend).
 >   - **Supervisionado (Etapa 2)**: **Random Forest**, **XGBoost** e **LightGBM** com **Validação Cruzada Espacial (*Spatial K-Fold*)**, **AUC-ROC**, **F1-Score**, **Matriz de Confusão** e **Importância por Permutação (*Permutation Importance*)**.
 > - **Isolamento por Usuário (Multi-Tenant)**: tabelas `user_settings`/`metric_results`/`user_credentials` com isolamento estrito por `user_email`, em SQLite (`data/app.db`) — sem suporte a PostgreSQL implementado no backend atual.
 
@@ -40,12 +40,13 @@ Cada usuário faz login (por e-mail/senha ou, opcionalmente, com Google) e cadas
 - **🧮 Cálculo sob demanda**: o processamento só roda quando você clica em "Calcular métricas", com cada etapa visível em tempo real e uma barra de progresso única (etapa + %) do início ao fim — não recalcula sozinho a cada interação com a página
 - **✨ Métricas reveladas uma a uma**: cada métrica de paisagem aparece em sua própria seção conforme é calculada, com gráfico de barras interativo (por classe) + tabela, em vez de só uma tabela técnica ao final
 - **🧬 Matriz socioecológica (SSE) & Clustering**: agrega todas as suas análises salvas numa matriz multivariada e permite agrupá-las com K-Means/DBSCAN, com projeção 2D via PCA
+- **🔮 Predição de anos futuros (Markov)**: envie 2+ GeoTIFFs de anos diferentes (ano identificado pelo nome do arquivo), para um ponto+buffer, um município ou o raster inteiro — projeta a proporção futura de cada classe via cadeia de Markov, com gráfico e tabela da matriz de transição
 - **📊 Análise Robusta**: Cálculo de 12+ métricas de paisagem diferentes, por classe e de nível de paisagem
 - **🗺️ Visualização**: Mapas interativos (Leaflet) e gráficos (Chart.js) das classes de uso do solo
 - **📜 Governança LGPD**: exportação dos seus dados em JSON e eliminação de conta sob demanda (Art. 18)
 - **🐳 Docker**: imagem e `docker-compose.yml` prontos para rodar sem instalar dependências localmente
 
-> Recursos que existiram na versão anterior (Streamlit) e ainda não têm equivalente no frontend atual — comparação entre múltiplos GeoTIFFs com relatório HTML, predição de anos futuros via cadeia de Markov, exportação em CSV/XLSX, enriquecimento da matriz SSE com CSV externo/população do IBGE — ver a nota em "[📍 Onde encontrar seus resultados](#-onde-encontrar-seus-resultados)" e o ROADMAP.md.
+> Recursos que existiram na versão anterior (Streamlit) e ainda não têm equivalente no frontend atual — comparação entre múltiplos GeoTIFFs com relatório HTML para impressão/PDF, exportação em CSV/XLSX, enriquecimento da matriz SSE com CSV externo/população do IBGE, métricas por município em lote via shapefile — ver a nota em "[📍 Onde encontrar seus resultados](#-onde-encontrar-seus-resultados)" e o ROADMAP.md.
 
 ---
 
@@ -227,9 +228,10 @@ Resumo de cada resultado calculado e onde ele aparece na tela do frontend atual 
 | Tabela + gráfico de métricas por classe | Mesma aba, ao lado do passo a passo | — (visual; sem export próprio ainda) |
 | Matriz socioecológica (SSE): todas as suas análises salvas agregadas | Aba "🧬 Matriz Socioecológica & Clustering" | — (visual; sem export próprio ainda) |
 | Agrupamento K-Means/DBSCAN (perfis + projeção PCA 2D) | Mesma aba, abaixo da matriz SSE | — (visual; sem export próprio ainda) |
+| Predição de anos futuros (Markov): histórico + projeção por classe, matriz de transição | Aba "🔮 Predição (Markov)" | — (visual; sem export próprio ainda) |
 | Exportação de dados pessoais (Art. 18 LGPD) | Aba "📜 Privacidade & LGPD" | Botão **"Baixar Dados em JSON"** |
 
-> **Atenção — funcionalidades documentadas no histórico do projeto mas ainda sem equivalente no frontend atual** (ver [ROADMAP.md](ROADMAP.md) para o detalhamento): comparação entre múltiplos GeoTIFFs, relatório HTML para impressão/PDF, predição de anos futuros via cadeia de Markov, métricas por município em lote via shapefile, e exportação em CSV/XLSX de qualquer resultado. Essas features existiam na versão anterior (Streamlit) e foram descobertas sem porte durante a migração para o backend FastAPI + frontend TypeScript — a lógica de alguma delas (predição de Markov) já foi preservada em `backend/app/services/landscape_core.py`, mas nenhuma tem rota de API nem UI própria hoje.
+> **Atenção — funcionalidades documentadas no histórico do projeto mas ainda sem equivalente no frontend atual** (ver [ROADMAP.md](ROADMAP.md) para o detalhamento): comparação entre múltiplos GeoTIFFs com relatório HTML para impressão/PDF, métricas por município em lote via shapefile, e exportação em CSV/XLSX de qualquer resultado. Essas features existiam na versão anterior (Streamlit) e foram descobertas sem porte durante a migração para o backend FastAPI + frontend TypeScript.
 
 ---
 

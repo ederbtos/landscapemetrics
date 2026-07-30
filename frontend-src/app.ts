@@ -84,6 +84,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 let authMode: 'login' | 'register' = 'login';
 
+// --- BYPASS TEMPORÁRIO DE LOGIN (pedido em 2026-07-30, para rodar cálculos
+// reais sem fricção de login) — deixe null para restaurar o fluxo normal.
+// Espelha backend/.env::dev_auth_bypass_email (ver backend/app/api/deps.py)
+// — o backend aceita qualquer token enquanto esse bypass estiver ativo lá,
+// então o valor de accessToken aqui não precisa ser um JWT de verdade.
+const DEV_BYPASS_EMAIL: string | null = 'ederbtos@gmail.com';
+
 // Access token só em memória (nunca localStorage) — reduz a janela de
 // exfiltração via XSS: some ao fechar a aba/recarregar a página, e é
 // recuperado no carregamento seguinte via o refresh token (cookie
@@ -140,6 +147,18 @@ async function _tryRefreshAccessToken(): Promise<string | null> {
 }
 
 async function checkAuthSession(): Promise<void> {
+  if (DEV_BYPASS_EMAIL) {
+    accessToken = 'dev-bypass';
+    const bypassContainer = $('user-session-container');
+    const bypassShell = $('app-shell');
+    bypassContainer.innerHTML = `<span style="font-size: 0.85rem; color: var(--accent-emerald); font-weight: 600;">👤 ${DEV_BYPASS_EMAIL} (login temporariamente desativado)</span>`;
+    closeAuthModal();
+    bypassShell.style.display = 'flex';
+    loadGeeCredentialsStatus();
+    updateStepper();
+    return;
+  }
+
   _consumeGoogleRedirectFragment();
 
   const container = $('user-session-container');
@@ -181,8 +200,7 @@ async function loadGoogleLoginOption(): Promise<void> {
 }
 
 function requireAuth(): boolean {
-  const token = localStorage.getItem('access_token');
-  if (!token) {
+  if (!accessToken) {
     openAuthModal();
     return false;
   }
@@ -244,7 +262,7 @@ async function handleAuthSubmit(event: Event): Promise<void> {
       throw new Error(data.detail || 'Falha na autenticação.');
     }
 
-    localStorage.setItem('access_token', data.access_token);
+    accessToken = data.access_token;
     localStorage.setItem('user_email', email);
     checkAuthSession();
   } catch (err: any) {
@@ -253,8 +271,18 @@ async function handleAuthSubmit(event: Event): Promise<void> {
   }
 }
 
-function logout(): void {
-  localStorage.removeItem('access_token');
+// Precisa chamar o backend (não só limpar o estado local) para revogar o
+// refresh token — sem isso, o cookie httpOnly continuaria válido e a
+// próxima checkAuthSession (ex.: ao recarregar a página) usaria
+// _tryRefreshAccessToken pra logar o usuário de volta silenciosamente,
+// tornando "Sair" inofensivo agora que o access token só vive em memória.
+async function logout(): Promise<void> {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  } catch {
+    // segue limpando o estado local mesmo se a chamada falhar
+  }
+  accessToken = null;
   localStorage.removeItem('user_email');
   checkAuthSession();
 }
@@ -397,7 +425,7 @@ let hasGeeCredentials = false;
 
 async function loadGeeCredentialsStatus(): Promise<void> {
   const statusEl = $('gee-credentials-status');
-  if (!localStorage.getItem('access_token')) {
+  if (!accessToken) {
     statusEl.textContent = 'Faça login para cadastrar sua credencial do Earth Engine.';
     return;
   }

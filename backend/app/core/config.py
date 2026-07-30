@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     def google_oauth_configured(self) -> bool:
         return bool(self.google_client_id and self.google_client_secret and self.google_redirect_uri)
 
+    # --- BYPASS TEMPORÁRIO (remover depois — ver api/deps.py::get_current_user).
+    # Ausente/vazio por padrão: não muda nada a menos que alguém configure
+    # explicitamente em backend/.env.
+    dev_auth_bypass_email: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

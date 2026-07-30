@@ -5,6 +5,8 @@ import logging
 import os
 from typing import List, Optional
 
+import numpy as np
+import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.api.deps import get_current_user
@@ -117,7 +119,6 @@ async def predict_future_years(
         unique, counts = np.unique(valid_pixels, return_counts=True)
         total_valid = valid_pixels.size
         last_proportions = {int(k): v / total_valid for k, v in zip(unique, counts)}
-        import pandas as pd
         last_proportions_series = pd.Series(last_proportions)
         
         # Intervalo médio histórico
