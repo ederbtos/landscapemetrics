@@ -624,6 +624,31 @@ Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo pl
   escopo do cache (não são dados agregados nacionais). Coberto por 2 novos testes em
   `tests/test_backend_api_routes.py` (cache usado, chamada ao vivo bloqueada via `monkeypatch` que
   falha o teste se for chamada). Suíte completa: **118 testes passando**.
+- **Segunda auditoria (2026-07-30, pedida pelo usuário) — varredura de `pyflakes` + segunda
+  passada de cache-vs-live**: sem bugs novos do tipo "import faltando" (os dois já corrigidos
+  antes — `markov.py`/`supervised.py` — continuam sendo os únicos daquele formato). Achados:
+  - **23 imports/variáveis mortos removidos** (`pyflakes backend/app`, zero ocorrências depois):
+    `datetime`/`timezone` não usados em `auth.py`; `typing.*` não usados em `ibge.py`/`lgpd.py`/
+    `sse.py`/`user.py`/`supervised_models.py`; `fastapi.status`/`HTTPException` não usados em
+    `ibge.py`/`user.py`; `json` não usado em `lgpd.py`; um `import pandas as pd` redundante no meio
+    de uma função em `sse.py:123` (o de nível de módulo já bastava); `sklearn.model_selection.KFold`
+    não usado em `supervised_models.py` (só `GroupKFold` é usado); variável local `y_val` nunca lida
+    no loop de validação cruzada de `supervised_models.py` (métricas finais vêm das predições
+    out-of-fold agregadas, não por fold).
+  - **Lacuna real encontrada, mesmo padrão da anterior**: `GET /api/ibge/municipios/{codigo}/
+    populacao` sempre chamava a API do IBGE ao vivo, mas a coluna `municipios_malha.
+    populacao_estimada` **já existe e já está preenchida para 5.442/5.570 municípios** — o próprio
+    `scripts/seed_municipios_malha.py` busca essa população (mesma consulta SIDRA feita na rota) no
+    momento do seed, só que ninguém tinha conectado a rota a essa coluna. Corrigido: a rota agora
+    checa `municipios_db.get_municipio_malha(codigo)` primeiro e só cai na chamada ao vivo se o
+    município não estiver cacheado OU a coluna estiver `NULL` (os ~128 restantes, ou seed rodado
+    com `--skip-populacao`). Coberto por 2 novos testes em `tests/test_backend_api_routes.py`
+    (cache usado, e fallback ao vivo quando o valor cacheado é `NULL`).
+  - Confirmado sem lacunas nos outros alvos verificados: `mapbiomas_stats.py`, `prodes.py`,
+    `ana_hidroclimatica.py` (rota + `db/*.py`) — todas as funções `save_*` só têm chamador nos
+    scripts de seed (arquitetura esperada: seed popula, rota só lê), sem `save_*` órfã esperando
+    ser chamada por engano de algum lugar que devia ler, e vice-versa.
+  - Suíte completa: **120 testes passando**.
 
 ### Fase 4 — Deploy
 

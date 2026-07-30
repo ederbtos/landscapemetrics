@@ -6,13 +6,13 @@ com validação cruzada espacial para evitar autocorrelação espacial, reportan
 F1-Score, Matriz de Confusão e Importância de Variáveis por Permutação (Permutation Feature Importance).
 """
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.cluster import KMeans
-from sklearn.model_selection import GroupKFold, KFold
+from sklearn.model_selection import GroupKFold
 from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score
 from sklearn.inspection import permutation_importance
 from sklearn.preprocessing import StandardScaler, LabelEncoder
@@ -172,7 +172,7 @@ def train_supervised_model(
     # Validação Cruzada Espacial (Spatial K-Fold)
     for train_idx, val_idx in gkf.split(X_scaled, y, groups=groups):
         X_train, y_train = X_scaled[train_idx], y[train_idx]
-        X_val, y_val = X_scaled[val_idx], y[val_idx]
+        X_val = X_scaled[val_idx]
 
         if len(np.unique(y_train)) < 2:
             continue

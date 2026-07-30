@@ -2,8 +2,7 @@
 Rotas para integração com a API do IBGE (Localidades, Malhas Territoriais e População Estimada)
 """
 import json
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException
 import requests
 import logging
 
@@ -92,7 +91,17 @@ def get_municipio_malha(codigo: str):
 
 @router.get("/municipios/{codigo}/populacao")
 def get_populacao(codigo: str):
-    """Busca a população estimada do município no IBGE."""
+    """População estimada do município — `municipios_malha.populacao_estimada`
+    já vem preenchida pelo mesmo `scripts/seed_municipios_malha.py` que
+    cacheia a malha (mesma consulta SIDRA feita aqui embaixo, só que em lote
+    no momento do seed). Só cai na chamada ao vivo se o município não estiver
+    cacheado, ou se a coluna ficou `NULL` (ex.: seed rodado com
+    `--skip-populacao`, ou aquele município específico falhou na consulta
+    SIDRA durante o seed)."""
+    cached = municipios_db.get_municipio_malha(codigo)
+    if cached is not None and cached["populacao_estimada"] is not None:
+        return {"municipio_codigo": codigo, "populacao_estimada": cached["populacao_estimada"]}
+
     try:
         res = requests.get(
             f"https://servicodados.ibge.gov.br/api/v3/agregados/6579/periodos/-1/variaveis/9324?localidades=N6[{codigo}]",

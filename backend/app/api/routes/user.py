@@ -1,8 +1,8 @@
 """
 Rotas para Configurações e Preferências Individualizadas do Usuário (Escritório Virtual)
 """
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List, Optional
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user

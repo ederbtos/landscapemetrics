@@ -20,7 +20,6 @@ Um usuário que loga só via Google nunca ganha uma linha na tabela `users`
 (essa tabela é só para senha/hash bcrypt) — o e-mail já basta como identidade
 em `db/schema.py`/demais tabelas (nenhuma tem FOREIGN KEY para `users`).
 """
-from datetime import datetime, timezone
 from urllib.parse import quote
 
 from authlib.integrations.starlette_client import OAuth

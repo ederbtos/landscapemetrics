@@ -3,7 +3,7 @@ Rota para a Matriz Socioecológica (SSE) e Agrupamento Multivariado (K-Means e D
 """
 import io
 import json
-from typing import Any, Dict, List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -120,7 +120,6 @@ def run_kmeans_clustering(
     if req.show_elbow:
         elbow_df = clustering.compute_elbow_curve(df, req.feature_cols, max_k=min(10, len(df)))
 
-    import pandas as pd
     return {
         "k": res["k"],
         "silhouette": res["silhouette"],

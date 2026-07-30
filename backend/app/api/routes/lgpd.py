@@ -1,12 +1,10 @@
 """
 Rotas para Governança LGPD, Consentimento Auditável e Direitos do Titular (Art. 18)
 """
-from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from datetime import datetime, timezone
 import hashlib
-import json
 
 from app.api.deps import get_current_user
 from app.db import metric_results as metric_results_db

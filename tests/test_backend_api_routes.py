@@ -150,6 +150,51 @@ async def test_ibge_populacao_route_returns_none_on_failure(monkeypatch, test_cl
 
 
 @pytest.mark.anyio
+async def test_ibge_populacao_route_uses_cache_and_skips_live_call(monkeypatch, test_client: AsyncClient):
+    import app.api.routes.ibge as ibge_routes
+    import app.db.municipios as municipios_db
+
+    municipios_db.save_municipio_malha(
+        "5208707", "Goiânia", "GO", _sample_geojson(), populacao_estimada=1536097
+    )
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("não deveria chamar a API ao vivo do IBGE com o cache preenchido")
+
+    monkeypatch.setattr(ibge_routes.requests, "get", _fail)
+
+    response = await test_client.get("/api/ibge/municipios/5208707/populacao")
+    assert response.status_code == 200
+    assert response.json() == {"municipio_codigo": "5208707", "populacao_estimada": 1536097}
+
+
+@pytest.mark.anyio
+async def test_ibge_populacao_route_falls_back_live_when_cached_value_is_null(
+    monkeypatch, test_client: AsyncClient
+):
+    """Município cacheado (malha existe), mas sem população (ex.: seed rodado
+    com --skip-populacao, ou aquele município falhou na consulta SIDRA
+    durante o seed) — não deve retornar None sem tentar a chamada ao vivo."""
+    import app.api.routes.ibge as ibge_routes
+    import app.db.municipios as municipios_db
+
+    municipios_db.save_municipio_malha("5208707", "Goiânia", "GO", _sample_geojson())
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{"resultados": [{"series": [{"series": {"2021": "1536097"}}]}]}]
+
+    monkeypatch.setattr(ibge_routes.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    response = await test_client.get("/api/ibge/municipios/5208707/populacao")
+    assert response.status_code == 200
+    assert response.json() == {"municipio_codigo": "5208707", "populacao_estimada": 1536097}
+
+
+@pytest.mark.anyio
 async def test_ibge_malha_route_uses_cache(test_client: AsyncClient):
     import app.db.municipios as municipios_db
 
