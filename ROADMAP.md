@@ -585,7 +585,16 @@ Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo pl
   um backfill de décadas. Se a ANA tiver uma rota separada para estações convencionais/histórico
   longo, ela não aparece neste manual. Credencial deliberadamente não passou pelo chat/histórico
   de comandos — o script lê de `ANA_IDENTIFICADOR`/`ANA_SENHA` (env) ou `--identificador`/`--senha`,
-  para o usuário rodar no próprio terminal. **Pendente**: rodar um piloto pequeno
+  para o usuário rodar no próprio terminal.
+  **Piloto rodado ao vivo (2026-07-30), bloqueado por permissão da conta, não por bug**: primeira
+  tentativa de autenticação (`OAUth/v1`) retornou `401` com corpo
+  `{"status":"UNAUTHORIZED","code":401,"message":"Usuário sem permissão de acesso ao módulo. Verifique!"}`
+  — resposta bem formada no schema oficial (`DevolucaoVO`), confirmando que a requisição está
+  correta (bate exatamente com o exemplo Java do manual); a credencial é reconhecida, mas essa conta
+  ainda não tem o módulo do HidroWebService liberado. Ação do usuário junto à ANA
+  (`hidro@ana.gov.br`), não algo resolvível em código — parado aqui de propósito para não martelar
+  o endpoint de autenticação (o manual avisa que alta frequência de tentativas pode levar ao bloqueio
+  automático do IP). **Pendente**: assim que a permissão for liberada, rodar um piloto pequeno
   (`--limit-estacoes`/`--municipio-codigo`/`--so-inventario`) para confirmar ao vivo o formato real
   da resposta antes do lote nacional completo — igual foi feito com PRODES/MapBiomas.
 - **Validar PRODES e IBGE ao vivo (pilotos reais)** — parcialmente feito (dados reais completos no
