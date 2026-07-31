@@ -626,6 +626,27 @@ Resumo das tarefas abertas e do estado atual dos jobs de ingestão em segundo pl
   finalizado — a trava só evita que ele vaze para produção sem querer, não substitui a remoção.
   Coberto por `tests/test_backend_config.py` (3 testes: recusa com cookie seguro, permite com
   cookie inseguro, permite sem bypass configurado).
+- **Revisão de segurança do bypass — buraco real na trava, agora fechado (2026-07-30)**: pedida
+  pelo usuário logo depois de o app subir localmente com o bypass ativo. Achado HIGH (confirmado
+  com 9/10 de confiança numa segunda passada de verificação independente): `assert_dev_bypass_is_safe`
+  só bloqueia o boot se `cookie_secure=true`, mas isso é uma flag sobre HTTPS do cookie de refresh,
+  não sobre o host estar alcançável pela rede — o próprio `docker-compose.yml` de desenvolvimento já
+  roda com `cookie_secure=false` **e** publicava a porta 8000 (`0.0.0.0`, via `Dockerfile`). Ligar
+  `dev_auth_bypass_email` nesse mesmo compose (ou no `backend/.env` do caminho `uvicorn` direto)
+  passava pela trava e expunha a API inteira sem credencial nenhuma para qualquer um com acesso à
+  rede do host — não só localhost. Corrigido em duas camadas, porque nenhuma sozinha cobre os dois
+  jeitos de rodar localmente (`README.md` — "Local sem Docker" vs. Docker):
+  - `get_current_user` (`backend/app/api/deps.py`) agora só aciona o bypass se a conexão vier de
+    loopback (`request.client.host` em `127.0.0.1`/`::1`) — cobre o caminho `uvicorn` direto.
+  - `docker-compose.yml`: porta publicada mudou de `"8000:8000"` para `"127.0.0.1:8000:8000"` —
+    o NAT do Docker faz a conexão não aparecer como loopback de dentro do container mesmo para quem
+    acessa via `localhost` no host, então a checagem em Python sozinha não cobre o caminho Docker;
+    a mitigação de rede sim, independente do que o container vê como IP de origem.
+  - Um segundo achado (texto de exceção interna devolvido ao cliente em `municipio_batch.py`) foi
+    descartado após verificação — é um padrão já existente em toda a aplicação (`metrics.py`,
+    `markov.py`, `credentials.py`, `ibge.py` fazem o mesmo), não algo introduzido nesta sessão.
+  - Coberto por `tests/test_backend_deps.py` (3 testes: bypass ativa de loopback, não ativa de IP
+    não-loopback, sem bypass configurado exige auth real). Suíte completa: **123 testes passando**.
 - **Lacuna fechada: `GET /api/ibge/ufs` e `/ufs/{uf}/municipios` passam a usar o cache primeiro
   (2026-07-30)**: auditoria (pedida pelo usuário) de quais funcionalidades já liam do banco
   nacional (Fase 10) vs. ainda chamavam APIs externas ao vivo encontrou essas duas rotas como única

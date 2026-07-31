@@ -10,7 +10,11 @@ services:
       COOKIE_SECURE: "false"
       DB_PATH: data/app.db
     ports:
-      - "8000:8000"
+      # Só no loopback do host — nunca exponha isso à rede local/pública
+      # (revisão de segurança, 2026-07-30, ver comentário do bypass de login
+      # em backend/app/api/deps.py). Se precisar acessar de outra máquina,
+      # publique explicitamente em vez de reverter para "8000:8000".
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
