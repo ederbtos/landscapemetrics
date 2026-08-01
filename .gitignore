@@ -134,10 +134,12 @@ data/
 # Configuração de deploy específica de uma instância (domínio real)
 Caddyfile
 
-# Frontend TypeScript (frontend-src/) — static/app.js é artefato gerado por
-# `npm run build` (ver tsconfig.json), nunca editado à mão nem versionado.
+# Frontend TypeScript (frontend-src/) — static/app.js e static/atlas.js são
+# artefatos gerados por `npm run build` (ver tsconfig.json/tsconfig.atlas.json),
+# nunca editados à mão nem versionados.
 node_modules/
 static/app.js
+static/atlas.js
 
 # Testes E2E (Playwright) — tests/e2e
 tests/e2e/node_modules/

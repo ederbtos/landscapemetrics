@@ -21,6 +21,7 @@ from contextlib import closing
 
 from app.core.config import get_settings
 from app.db.ana_hidroclimatica import init_ana_hidroclimatica_tables
+from app.db.diversity_atlas import init_diversity_atlas_table
 from app.db.mapbiomas_stats import init_mapbiomas_stats_table
 from app.db.municipios import init_municipios_table
 from app.db.prodes import init_prodes_table
@@ -131,3 +132,4 @@ def init_db() -> None:
     init_mapbiomas_stats_table()
     init_prodes_table()
     init_ana_hidroclimatica_tables()
+    init_diversity_atlas_table()

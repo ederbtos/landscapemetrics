@@ -1,9 +1,10 @@
-# Compila o frontend TypeScript (frontend-src/) para static/app.js — ver
-# tsconfig.json ("outFile"). Estágio isolado: Node nunca entra na imagem
-# final, só o static/app.js já compilado.
+# Compila o frontend TypeScript (frontend-src/) para static/app.js e
+# static/atlas.js (dois entry points, dois tsconfig — ver tsconfig.json e
+# tsconfig.atlas.json, cada um com seu próprio "outFile"). Estágio isolado:
+# Node nunca entra na imagem final, só os .js já compilados.
 FROM node:20-slim AS frontend-build
 WORKDIR /app
-COPY package.json package-lock.json tsconfig.json ./
+COPY package.json package-lock.json tsconfig.json tsconfig.atlas.json ./
 COPY frontend-src ./frontend-src
 RUN mkdir -p static && npm ci && npm run build
 
@@ -29,6 +30,7 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r /tmp/requirements
 COPY backend /app/backend
 COPY static /app/static
 COPY --from=frontend-build /app/static/app.js /app/static/app.js
+COPY --from=frontend-build /app/static/atlas.js /app/static/atlas.js
 
 EXPOSE 8000
 

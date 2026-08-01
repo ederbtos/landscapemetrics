@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Atlas Nacional de Paisagem | Landscape Metrics Extractor</title>
+    <meta
+      name="description"
+      content="Ranking e mapa público de diversidade e composição da paisagem para todos os municípios brasileiros — dados MapBiomas 2004-2023, sem necessidade de login."
+    />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="/atlas.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <header class="atlas-topbar">
+      <a class="atlas-brand" href="/landing.html">
+        <span>🏞️</span>
+        Landscape Metrics Extractor
+      </a>
+      <nav class="atlas-topbar-actions">
+        <a class="atlas-text-link" href="/landing.html">Sobre a plataforma</a>
+        <a class="atlas-btn atlas-btn-primary" href="/index.html">Entrar / Cadastrar</a>
+      </nav>
+    </header>
+
+    <main class="atlas-shell">
+      <section class="atlas-hero">
+        <p class="atlas-eyebrow">Vitrine pública — sem necessidade de login</p>
+        <h1>Atlas Nacional de Paisagem</h1>
+        <p class="atlas-lead">
+          Diversidade, composição e tendência de perda de vegetação natural para os municípios
+          brasileiros já processados, calculados a partir de dados reais do MapBiomas (2004-2023).
+          Clique em um município no mapa ou na tabela para ver sua série histórica.
+        </p>
+      </section>
+
+      <section class="atlas-filtros" aria-label="Filtros do Atlas">
+        <label>
+          Ano
+          <select id="atlas-ano"></select>
+        </label>
+        <label>
+          Métrica
+          <select id="atlas-metrica"></select>
+        </label>
+        <label>
+          Estado (UF)
+          <select id="atlas-uf">
+            <option value="">Brasil (todas as UFs)</option>
+          </select>
+        </label>
+      </section>
+
+      <p id="atlas-erro" class="atlas-erro atlas-hidden">
+        Não foi possível carregar o Atlas agora. Confirme que
+        <code>scripts/build_diversity_atlas.py</code> já foi executado (ver ROADMAP.md).
+      </p>
+
+      <section class="atlas-grid">
+        <div id="atlas-map" class="atlas-map"></div>
+
+        <div class="atlas-tabelas">
+          <div class="atlas-card">
+            <h2>Ranking por métrica selecionada</h2>
+            <table class="atlas-table">
+              <thead>
+                <tr><th>#</th><th>Município</th><th>Valor</th></tr>
+              </thead>
+              <tbody id="atlas-ranking-body"></tbody>
+            </table>
+          </div>
+
+          <div class="atlas-card">
+            <h2 id="atlas-tendencia-titulo">Maior perda de vegetação natural</h2>
+            <table class="atlas-table">
+              <thead>
+                <tr><th>#</th><th>Município</th><th>Variação</th></tr>
+              </thead>
+              <tbody id="atlas-tendencia-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="atlas-perfil" class="atlas-card atlas-perfil atlas-hidden">
+        <h2 id="atlas-perfil-titulo">Perfil do município</h2>
+        <p id="atlas-perfil-tendencia"></p>
+        <canvas id="atlas-perfil-chart" height="90"></canvas>
+      </section>
+
+      <section class="atlas-nota">
+        <h2>Como este Atlas foi calculado</h2>
+        <p>
+          Os índices de diversidade (SHDI/SHEI/SIDI/SIEI) e a composição por classe vêm de área
+          real do MapBiomas agregada por município — sem métricas de fragmentação espacial
+          (densidade de manchas, borda, forma), que exigem extração de raster por município e
+          ficam para uma próxima fase. O agrupamento de classes MapBiomas em "natural" /
+          "antropizado" / "água" / "não vegetado" é uma simplificação própria deste projeto, não
+          uma hierarquia oficial do MapBiomas.
+        </p>
+      </section>
+    </main>
+
+    <script src="/atlas.js"></script>
+  </body>
+</html>

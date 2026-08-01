@@ -4,12 +4,11 @@
     "lib": ["ES2020", "DOM"],
     "module": "none",
     "moduleResolution": "node10",
-    "outFile": "./static/app.js",
+    "outFile": "./static/atlas.js",
     "strict": true,
     "noImplicitAny": false,
     "skipLibCheck": true,
     "types": ["leaflet"]
   },
-  "include": ["frontend-src/**/*.ts"],
-  "exclude": ["frontend-src/atlas.ts"]
+  "include": ["frontend-src/atlas.ts", "frontend-src/globals.d.ts"]
 }

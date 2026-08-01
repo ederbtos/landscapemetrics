@@ -775,6 +775,32 @@ def sanitize_for_json(value):
     return value
 
 
+def diversity_indices_from_proportions(proportions) -> dict:
+    """Calcula SHDI/SHEI/SIDI/SIEI/riqueza de manchas a partir de uma série
+    de proporções de área por classe (soma ~1.0) — fórmulas padrão do
+    FRAGSTATS, sem método dedicado equivalente no PyLandStats 3.1.0 usado
+    neste projeto. Função pura (sem `pls.Landscape`), reaproveitada tanto por
+    `_compute_landscape_metrics` (que já tem os patches calculados via
+    PyLandStats) quanto por `app.services.diversity_atlas` (que parte direto
+    de área por classe agregada em `mapbiomas_municipio_stats`, sem nunca
+    abrir um raster — ver Atlas Nacional de Paisagem).
+
+    `proportions` é qualquer sequência de proporções (ex.: `pd.Series`) já
+    normalizada para somar ~1.0 entre as classes presentes."""
+    richness = len(proportions)
+    values: dict = {"patch_richness": richness}
+
+    shdi = -float(sum(p * np.log(p) for p in proportions if p > 0)) if richness > 0 else None
+    values["shannon_diversity_index"] = shdi
+    values["shannon_evenness_index"] = shdi / np.log(richness) if shdi is not None and richness > 1 else None
+
+    sidi = 1 - float(sum(p ** 2 for p in proportions)) if richness > 0 else None
+    values["simpson_diversity_index"] = sidi
+    values["simpson_evenness_index"] = sidi / (1 - 1 / richness) if sidi is not None and richness > 1 else None
+
+    return values
+
+
 def _compute_landscape_metrics(ls) -> dict:
     """Calcula métricas de nível de PAISAGEM (um único valor global, não
     por classe) — diversidade e agregação da paisagem como um todo,
@@ -794,21 +820,15 @@ def _compute_landscape_metrics(ls) -> dict:
         logger.warning(f"Erro ao calcular métricas de paisagem (PyLandStats): {landscape_error}")
         values = {}
 
-    # SHEI/SIDI/SIEI/PR: sem método dedicado no PyLandStats 3.1.0 — fórmulas
-    # padrão do FRAGSTATS a partir das proporções de área por classe.
+    # SHEI/SIDI/SIEI/PR: recalculados aqui (não reaproveita o
+    # 'shannon_diversity_index' do PyLandStats acima) para que os quatro
+    # índices venham da mesma fonte (proporções por classe) e fiquem
+    # mutuamente consistentes — ver `diversity_indices_from_proportions`.
     try:
         proportions = ls.compute_class_metrics_df(
             metrics=['proportion_of_landscape']
         )['proportion_of_landscape'] / 100
-        richness = len(proportions)
-        values['patch_richness'] = richness
-
-        shdi = values.get('shannon_diversity_index')
-        values['shannon_evenness_index'] = shdi / np.log(richness) if shdi is not None and richness > 1 else None
-
-        sidi = 1 - float((proportions ** 2).sum())
-        values['simpson_diversity_index'] = sidi
-        values['simpson_evenness_index'] = sidi / (1 - 1 / richness) if richness > 1 else None
+        values.update(diversity_indices_from_proportions(proportions))
     except Exception as diversity_error:
         logger.warning(f"Erro ao calcular índices de diversidade manuais: {diversity_error}")
 

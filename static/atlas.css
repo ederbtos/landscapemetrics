@@ -1,0 +1,232 @@
+:root {
+  color-scheme: dark;
+  --bg: #07111f;
+  --card: rgba(16, 27, 45, 0.8);
+  --text: #f8fafc;
+  --muted: #94a3b8;
+  --accent: #10b981;
+  --accent-2: #06b6d4;
+  --negativo: #f87171;
+  --border: rgba(255, 255, 255, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Outfit, Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: radial-gradient(circle at top left, rgba(16, 185, 129, 0.18), transparent 28%), var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.atlas-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  max-width: 1200px;
+  margin: 1rem auto;
+  padding: 0.75rem 1.25rem;
+  background: rgba(8, 15, 26, 0.62);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  backdrop-filter: blur(16px);
+}
+
+.atlas-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 700;
+}
+
+.atlas-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.atlas-text-link {
+  color: var(--muted);
+}
+
+.atlas-btn {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.6rem 1.1rem;
+  font-weight: 600;
+}
+
+.atlas-btn-primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #06251c;
+}
+
+.atlas-shell {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1.25rem 4rem;
+}
+
+.atlas-hero {
+  padding: 1.5rem 0 1rem;
+}
+
+.atlas-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.atlas-hero h1 {
+  font-size: clamp(1.8rem, 3vw, 2.6rem);
+  margin: 0.3rem 0 0.8rem;
+}
+
+.atlas-lead {
+  color: var(--muted);
+  max-width: 70ch;
+}
+
+.atlas-filtros {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.atlas-filtros label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  flex: 1 1 200px;
+}
+
+.atlas-filtros select {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 0.5rem 0.6rem;
+  font-size: 0.95rem;
+}
+
+.atlas-erro {
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  color: #fecaca;
+  margin-bottom: 1.5rem;
+}
+
+.atlas-hidden {
+  display: none !important;
+}
+
+.atlas-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .atlas-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.atlas-map {
+  height: 520px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.atlas-tabelas {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.atlas-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 1.1rem 1.25rem;
+}
+
+.atlas-card h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.75rem;
+}
+
+.atlas-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.atlas-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 0.4rem 0.3rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.atlas-table td {
+  padding: 0.45rem 0.3rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.atlas-ranking-row {
+  cursor: pointer;
+}
+
+.atlas-ranking-row:hover {
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.atlas-negativo {
+  color: var(--negativo);
+  font-weight: 600;
+}
+
+.atlas-positivo {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.atlas-perfil {
+  margin-top: 1.5rem;
+}
+
+.atlas-nota {
+  margin-top: 2rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  max-width: 80ch;
+}
+
+.atlas-nota h2 {
+  color: var(--text);
+  font-size: 1rem;
+}

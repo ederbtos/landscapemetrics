@@ -23,6 +23,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from app.api.routes import ana_hidroclimatica as ana_routes
+from app.api.routes import atlas as atlas_routes
 from app.api.routes import auth as auth_routes
 from app.api.routes import credentials as credentials_routes
 from app.api.routes import ibge as ibge_routes
@@ -79,6 +80,9 @@ app.include_router(mapbiomas_stats_routes.router)
 app.include_router(ana_routes.router)
 app.include_router(markov_routes.router)
 app.include_router(municipio_batch_routes.router)
+# Única rota pública além da landing/health — ver docstring de
+# app/api/routes/atlas.py.
+app.include_router(atlas_routes.router)
 
 static_dir = os.path.join(PROJECT_ROOT, "static")
 

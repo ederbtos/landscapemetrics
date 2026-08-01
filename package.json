@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Fonte TypeScript do frontend estático (compila para static/app.js) — ver frontend-src/.",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsc -p tsconfig.atlas.json",
     "watch": "tsc --watch"
   },
   "devDependencies": {
