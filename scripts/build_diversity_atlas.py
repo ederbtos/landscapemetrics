@@ -26,7 +26,6 @@ from contextlib import closing
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
-os.chdir(BACKEND_DIR)
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.config import get_settings  # noqa: E402
@@ -79,6 +78,16 @@ def build_diversity_atlas(uf: str | None = None) -> int:
 
 
 def main() -> None:
+    # cwd só é forçado para backend/ na execução direta como script (CLI) —
+    # nunca ao importar este módulo (ver tests/test_backend_atlas.py, que
+    # carrega esta função via importlib): um os.chdir() a nível de módulo
+    # mudaria o cwd do processo inteiro do pytest, vazando para qualquer
+    # teste rodado depois e quebrando a resolução de backend/.env
+    # (Settings.env_file=".env", relativo ao cwd) de outros testes que não
+    # mockam explicitamente cada variável (achado real: derrubava
+    # dev_auth_bypass_email para "ligado" em testes que não esperavam isso).
+    os.chdir(BACKEND_DIR)
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--uf", help="Processa só uma UF (default: Brasil inteiro).")
     args = parser.parse_args()

@@ -22,6 +22,11 @@ itsdangerous==2.2.0
 geopandas==0.14.3
 geemap==0.30.0
 earthengine-api==0.1.394
+# Já vinha instalado transitivamente (dependência do earthengine-api/geemap)
+# — pinado explicitamente porque scripts/pilot_export_municipio_raster.py
+# passa a depender dele diretamente (download de GeoTIFF exportado via
+# Export.image.toCloudStorage, ver Atlas Nacional de Paisagem Fase 1).
+google-cloud-storage==3.13.0
 pylandstats==3.1.0
 matplotlib==3.11.0
 numpy==2.4.6
