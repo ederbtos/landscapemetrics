@@ -14,6 +14,7 @@ regra de negócio do app original: nenhuma métrica é gerada sem dados reais
 por trás (falha explícita em vez de dado fabricado).
 """
 import json
+from pathlib import Path
 from typing import Optional
 
 import ee
@@ -195,12 +196,20 @@ def run_landscape_analysis(
     municipio_uf: Optional[str] = None,
     tif_filename: Optional[str] = None,
     tif_bytes: Optional[bytes] = None,
+    custom_region_files: Optional[list] = None,
     credentials: Optional[dict] = None,
 ) -> dict:
     """Executa o pipeline real (área de interesse -> extração -> PyLandStats)
     e devolve tudo que a rota precisa para persistir/retornar o resultado.
     Levanta `LandscapeAnalysisError` (mensagem pronta para o usuário) em
-    qualquer etapa que não puder ser concluída com dados reais."""
+    qualquer etapa que não puder ser concluída com dados reais.
+
+    `custom_region_files` (lista de `_UploadedFileAdapter`) é a 3ª opção de
+    área de interesse (além de ponto+buffer e município do IBGE): um
+    shapefile próprio enviado pelo usuário (ex.: limite de uma propriedade
+    ou unidade de conservação), convertido para o mesmo formato de GeoJSON
+    usado pelo limite municipal — a partir daqui os dois caminham juntos
+    (`region_geojson`)."""
     point_lonlat = (
         (point_lon, point_lat) if point_lon is not None and point_lat is not None else None
     )
@@ -214,13 +223,30 @@ def run_landscape_analysis(
                 f"{municipio_codigo}) na API de malhas do IBGE. Tente novamente."
             )
 
+    custom_region_geojson = None
+    custom_region_bytes = None
+    custom_region_label = None
+    if custom_region_files:
+        sorted_files = sorted(custom_region_files, key=lambda f: f.name)
+        custom_region_bytes = b"".join(f.getbuffer() for f in sorted_files)
+        custom_region_label = Path(sorted_files[0].name).stem
+        try:
+            custom_region_geojson = landscape_core.uploaded_shapefile_to_region_geojson(custom_region_files)
+        except Exception as shp_error:
+            raise LandscapeAnalysisError(
+                f"Não foi possível ler o shapefile enviado como área de interesse: {shp_error}"
+            ) from shp_error
+
+    region_geojson = municipio_geojson or custom_region_geojson
+
     resolution = (30.0, 30.0)
     ano = None
 
     if data_source == "mapbiomas":
-        if point_lonlat is None and municipio_geojson is None:
+        if point_lonlat is None and region_geojson is None:
             raise LandscapeAnalysisError(
-                "Selecione um ponto + buffer ou um município para usar a fonte MapBiomas."
+                "Selecione um ponto + buffer, um município ou envie um shapefile de área "
+                "para usar a fonte MapBiomas."
             )
         if not credentials:
             raise LandscapeAnalysisError(
@@ -228,7 +254,7 @@ def run_landscape_analysis(
                 "sua credencial de conta de serviço antes de calcular métricas via MapBiomas."
             )
         initialize_earth_engine(credentials)
-        roi_buffer = _build_mapbiomas_roi(point_lonlat, buffer_dist, municipio_geojson)
+        roi_buffer = _build_mapbiomas_roi(point_lonlat, buffer_dist, region_geojson)
         np_arr, resolution, ano = _extract_mapbiomas_pixels(roi_buffer)
 
     elif data_source == "geotiff":
@@ -236,9 +262,9 @@ def run_landscape_analysis(
             raise LandscapeAnalysisError("Envie um arquivo GeoTIFF para usar a fonte 'Meu raster'.")
         uploaded = _UploadedFileAdapter(tif_filename or "upload.tif", tif_bytes)
         try:
-            if municipio_geojson is not None:
+            if region_geojson is not None:
                 np_arr, resolution, _reproj = landscape_core.extract_landscape_from_tif(
-                    uploaded, region_geojson=municipio_geojson,
+                    uploaded, region_geojson=region_geojson,
                 )
             elif point_lonlat is not None and buffer_dist is not None:
                 np_arr, resolution, _reproj = landscape_core.extract_landscape_from_tif(
@@ -250,7 +276,7 @@ def run_landscape_analysis(
             raise LandscapeAnalysisError(
                 "Não foi possível extrair dados reais do GeoTIFF enviado. Isso não gera "
                 f"uma análise substituta com dados de exemplo. Detalhes: {tif_error}. "
-                "Possíveis causas: buffer/município fora da área do raster, CRS do raster "
+                "Possíveis causas: buffer/área fora da extensão do raster, CRS do raster "
                 "inválido, raster com apenas nodata, ou arquivo corrompido."
             ) from tif_error
         ano = landscape_core._extract_year_from_filename(tif_filename) if tif_filename else None
@@ -263,6 +289,8 @@ def run_landscape_analysis(
 
     if municipio_nome:
         label = f"{municipio_nome}/{municipio_uf}" if municipio_uf else municipio_nome
+    elif custom_region_label:
+        label = f"Área personalizada ({custom_region_label})"
     elif point_lon is not None and point_lat is not None:
         label = f"Ponto ({point_lon:.4f}, {point_lat:.4f})"
     else:
@@ -273,8 +301,9 @@ def run_landscape_analysis(
         tif_bytes=tif_bytes,
         point_lonlat=point_lonlat,
         buffer_dist=buffer_dist,
-        whole_raster=(data_source == "geotiff" and point_lonlat is None and municipio_geojson is None),
+        whole_raster=(data_source == "geotiff" and point_lonlat is None and region_geojson is None),
         municipio_codigo=municipio_codigo,
+        custom_region_bytes=custom_region_bytes,
     )
 
     return {

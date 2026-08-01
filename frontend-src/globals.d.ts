@@ -3,6 +3,10 @@
 // npm que não é usada em runtime (a build não faz bundling do Chart.js).
 declare const Chart: any;
 
+// SheetJS (xlsx) idem — CDN, usado só para exportar os resultados do
+// agrupamento (K-Means/DBSCAN) em .xlsx (ver exportClusterToExcel em app.ts).
+declare const XLSX: any;
+
 // Não está em lib.dom.d.ts (evento não padronizado, só Chromium/Edge).
 interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;

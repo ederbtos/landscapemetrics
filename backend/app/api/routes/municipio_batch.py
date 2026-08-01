@@ -160,4 +160,7 @@ async def run_municipio_batch(
         "colunas_detectadas": {"codigo": code_col, "nome": name_col, "uf": uf_col},
         "landscape_rows": landscape_rows,
         "class_rows": class_rows,
+        # Envelope do pipeline (wizard do frontend) — aditivo.
+        "step": "municipio_batch_completed",
+        "next_available_actions": ["cluster", "export"],
     })

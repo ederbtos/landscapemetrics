@@ -364,6 +364,31 @@ def _municipio_files_to_gdf(uploaded_files, max_size=None):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def uploaded_shapefile_to_region_geojson(uploaded_files, max_size=None) -> dict:
+    """Converte um shapefile próprio enviado pelo usuário (área de interesse
+    alternativa ao ponto+buffer/município do IBGE, ver api/routes/metrics.py)
+    num GeoJSON no mesmo formato que `municipio_geojson` (`{"features": [...]}`,
+    EPSG:4326) — reaproveitado por `_build_mapbiomas_roi`/
+    `extract_landscape_from_tif` sem precisar diferenciar a origem do
+    polígono. Se o arquivo tiver mais de uma geometria (ex.: várias
+    feições/talhões), todas são unidas (`unary_union`) numa única região —
+    a análise de paisagem trata a área de interesse como um polígono só."""
+    from shapely.ops import unary_union
+
+    gdf = _municipio_files_to_gdf(uploaded_files, max_size=max_size)
+    if gdf.empty:
+        raise ValueError("O shapefile enviado não contém nenhuma geometria.")
+    if gdf.crs is not None and str(gdf.crs) != "EPSG:4326":
+        gdf = gdf.to_crs("EPSG:4326")
+
+    geoms = list(gdf.geometry)
+    region_geom = geoms[0] if len(geoms) == 1 else unary_union(geoms)
+    return {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "properties": {}, "geometry": mapping(region_geom)}],
+    }
+
+
 def _utm_epsg_for_lonlat(lon: float, lat: float) -> int:
     """EPSG da zona UTM (WGS84) que contém o ponto — usado para reprojetar
     automaticamente um GeoTIFF geográfico quando há um ponto de interesse
@@ -852,7 +877,8 @@ def _extract_year_from_filename(filename: str):
 
 
 def _compute_fingerprint(data_source, tif_bytes=None, point_lonlat=None,
-                          buffer_dist=None, whole_raster=False, municipio_codigo=None) -> str:
+                          buffer_dist=None, whole_raster=False, municipio_codigo=None,
+                          custom_region_bytes=None) -> str:
     """Identifica de forma estável 'esta mesma submissão', para o cache de
     resultados (db.metric_results) — uma resubmissão com a mesma
     fingerprint reaproveita o resultado já calculado em vez de refazer a
@@ -864,7 +890,10 @@ def _compute_fingerprint(data_source, tif_bytes=None, point_lonlat=None,
     - MapBiomas ou GeoTIFF com área municipal: hash do código IBGE do
       município, no lugar de ponto/buffer.
     - MapBiomas com ponto (sem arquivo): hash do ponto (arredondado a 5
-      casas, ~1,1m) + buffer."""
+      casas, ~1,1m) + buffer.
+    - Área definida por shapefile próprio: hash dos bytes brutos do(s)
+      arquivo(s) enviados (`custom_region_bytes`), no lugar de
+      ponto/buffer/município — mesmo arquivo reenviado reaproveita o cache."""
     hasher = hashlib.sha256()
     hasher.update(data_source.encode("utf-8"))
     hasher.update(b"|whole" if whole_raster else b"|point")
@@ -873,6 +902,9 @@ def _compute_fingerprint(data_source, tif_bytes=None, point_lonlat=None,
         hasher.update(tif_bytes)
     if municipio_codigo is not None:
         hasher.update(f"|municipio|{municipio_codigo}".encode("utf-8"))
+    if custom_region_bytes is not None:
+        hasher.update(b"|shp|")
+        hasher.update(custom_region_bytes)
     if point_lonlat is not None:
         lon, lat = point_lonlat
         hasher.update(f"|point|{round(lon, 5)},{round(lat, 5)}".encode("utf-8"))

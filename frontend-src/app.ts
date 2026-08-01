@@ -25,6 +25,245 @@ let currentTab = 'tab-analise';
 let pcaChartInstance: any = null;
 let metricsChartInstance: any = null;
 
+// Última Matriz SSE carregada (GET /api/sse/matrix) — guardada em memória só
+// para alimentar as exportações .xlsx (exportSseMatrixToExcel/
+// exportClusterToExcel) sem precisar buscar de novo no backend.
+let lastSseMatrix: { records: any[]; columns: string[]; numeric_columns: string[] } | null = null;
+
+// ============================================================================
+// Wizard de 5 etapas (Área & Contexto → Fonte de Dados → Métricas →
+// Análise Avançada → Síntese & Exportação) — o pipeline em si continua
+// sendo as mesmas abas/rotas de sempre; o wizard só adiciona um estado
+// compartilhado (pipelineState) que trava as abas avançadas até a Etapa 3
+// terminar, e usa a saída da Etapa 3 como insumo (prefill) da Etapa 4.
+// ============================================================================
+
+// Abas que só fazem sentido depois de pelo menos uma análise de métricas
+// calculada nesta sessão (ou já existente no histórico do usuário).
+const ADVANCED_TABS = ['tab-sse', 'tab-markov', 'tab-municipio-batch', 'tab-sintese'];
+
+interface PipelineContext {
+  roiType: string;
+  municipioCodigo?: string;
+  pointLon?: number;
+  pointLat?: number;
+  bufferDist?: number;
+}
+
+interface PipelineState {
+  hasMetrics: boolean;
+  lastMetrics: any | null;
+  lastContext: PipelineContext | null;
+  lastMarkov: any | null;
+  lastCluster: { algo: 'kmeans' | 'dbscan'; data: any } | null;
+  lastMunicipioBatch: any | null;
+}
+
+const pipelineState: PipelineState = {
+  hasMetrics: false,
+  lastMetrics: null,
+  lastContext: null,
+  lastMarkov: null,
+  lastCluster: null,
+  lastMunicipioBatch: null,
+};
+
+// Espelham o resultado de updateStepper() (etapas 1/2 locais da aba de
+// análise) para o wizard global conseguir refletir o mesmo estado sem
+// recalcular a lógica de campos obrigatórios duas vezes.
+let step1Done = false;
+let step2Done = false;
+
+function isTabLocked(tabId: string): boolean {
+  return ADVANCED_TABS.includes(tabId) && !pipelineState.hasMetrics;
+}
+
+// Acende/apaga o cadeado visual nos itens do menu lateral que dependem da
+// Etapa 3 já ter rodado — chamado sempre que pipelineState.hasMetrics muda.
+function updateNavLocks(): void {
+  ADVANCED_TABS.forEach((tabId) => {
+    const btn = document.querySelector(`.sidebar .tab-btn[data-tab="${tabId}"]`);
+    if (btn) btn.classList.toggle('locked', !pipelineState.hasMetrics);
+  });
+}
+
+// Atualiza os 5 "pills" do wizard global (#global-wizard): done = etapa já
+// concluída nesta sessão, active = etapa correspondente à aba aberta agora,
+// locked = etapas 4/5 antes da primeira análise de métricas.
+function updateGlobalWizard(): void {
+  const step4Done = !!(pipelineState.lastMarkov || pipelineState.lastCluster || pipelineState.lastMunicipioBatch);
+  const doneByStep: Record<number, boolean> = {
+    1: step1Done,
+    2: step2Done,
+    3: pipelineState.hasMetrics,
+    4: step4Done,
+    5: false,
+  };
+  const lockedByStep: Record<number, boolean> = {
+    1: false,
+    2: false,
+    3: false,
+    4: !pipelineState.hasMetrics,
+    5: !pipelineState.hasMetrics,
+  };
+  const activeStepByTab: Record<string, number> = {
+    'tab-analise': step1Done && step2Done ? 3 : (step1Done ? 2 : 1),
+    'tab-sse': 4,
+    'tab-markov': 4,
+    'tab-municipio-batch': 4,
+    'tab-sintese': 5,
+  };
+  const activeStep = activeStepByTab[currentTab] ?? 0;
+
+  for (let n = 1; n <= 5; n++) {
+    const pill = document.getElementById(`wizard-step-${n}`);
+    if (!pill) continue;
+    pill.classList.toggle('done', doneByStep[n]);
+    pill.classList.toggle('locked', lockedByStep[n]);
+    pill.classList.toggle('active', n === activeStep);
+  }
+}
+
+// Clique num "pill" do wizard global — pula direto para a aba daquela etapa
+// (etapas 1-3 vivem todas em tab-analise; 4 abre o último módulo avançado
+// usado, ou Markov por padrão; 5 é a síntese).
+function goToWizardStep(n: number): void {
+  const lastAdvancedTab = currentTab === 'tab-sse' || currentTab === 'tab-municipio-batch' ? currentTab : 'tab-markov';
+  const tabByStep: Record<number, string> = {
+    1: 'tab-analise', 2: 'tab-analise', 3: 'tab-analise', 4: lastAdvancedTab, 5: 'tab-sintese',
+  };
+  const tabId = tabByStep[n];
+  if (isTabLocked(tabId)) {
+    showToast('Calcule uma análise de paisagem na Etapa 3 antes de acessar esta etapa.', 'error');
+    return;
+  }
+  const btn = document.querySelector<HTMLElement>(`.sidebar .tab-btn[data-tab="${tabId}"]`);
+  if (btn) btn.click();
+  else switchTab(null, tabId);
+}
+
+// Usada pelo painel "Etapa 4" que aparece junto do resultado das métricas —
+// além de navegar, repassa o contexto (município ou ponto+buffer) da última
+// análise calculada para o módulo avançado escolhido, evitando que o
+// usuário redigite os mesmos parâmetros na Etapa 4.
+function goToAdvancedStep(tabId: string): void {
+  prefillAdvancedFromLastContext(tabId);
+  const btn = document.querySelector<HTMLElement>(`.sidebar .tab-btn[data-tab="${tabId}"]`);
+  if (btn) btn.click();
+  else switchTab(null, tabId);
+}
+
+function prefillAdvancedFromLastContext(tabId: string): void {
+  const ctx = pipelineState.lastContext;
+  if (!ctx || tabId !== 'tab-markov') return;
+
+  if (ctx.roiType === 'municipio' && ctx.municipioCodigo) {
+    ($('markov-roi-type') as HTMLSelectElement).value = 'municipio';
+    toggleMarkovRoiInputs();
+    $<HTMLInputElement>('markov-municipio-codigo').value = ctx.municipioCodigo;
+  } else if (ctx.roiType === 'point' && ctx.pointLon !== undefined && ctx.pointLat !== undefined) {
+    ($('markov-roi-type') as HTMLSelectElement).value = 'point';
+    toggleMarkovRoiInputs();
+    $<HTMLInputElement>('markov-lon').value = String(ctx.pointLon);
+    $<HTMLInputElement>('markov-lat').value = String(ctx.pointLat);
+    $<HTMLInputElement>('markov-buffer').value = String(ctx.bufferDist ?? 5000);
+  }
+}
+
+// Um usuário que já tem análises salvas de sessões anteriores não deveria
+// ver a Etapa 4/5 travada de novo só por ter recarregado a página — checa o
+// histórico já persistido (mesma fonte da Matriz SSE) uma vez após o login.
+async function refreshHistoryUnlock(): Promise<void> {
+  if (!accessToken) return;
+  try {
+    const res = await fetch('/api/metrics/history', { headers: authHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (Array.isArray(data) && data.length > 0) {
+      pipelineState.hasMetrics = true;
+    }
+  } catch {
+    // silencioso — sem histórico carregado, o usuário ainda libera a Etapa 4
+    // normalmente ao calcular uma análise nova na Etapa 3.
+  } finally {
+    updateNavLocks();
+    updateGlobalWizard();
+  }
+}
+
+function renderSynthesis(): void {
+  const empty = $('sintese-empty');
+  const content = $('sintese-content');
+  if (!pipelineState.lastMetrics) {
+    empty.style.display = 'block';
+    content.style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  content.style.display = 'block';
+
+  const m = pipelineState.lastMetrics;
+  const lm = m.landscape_metrics || {};
+  const fmt = (v: unknown) => (typeof v === 'number' ? v.toFixed(2) : '—');
+  $('sintese-metrics-card').innerHTML = `
+    <div style="font-weight:700; margin-bottom:0.35rem;">📍 Métricas de paisagem (Etapa 3)</div>
+    <div><b>${m.label ?? ''}</b>${m.ano ? ` (${m.ano})` : ''}</div>
+    <div>SHDI: ${fmt(lm.shannon_diversity_index)} • Densidade de manchas: ${fmt(lm.patch_density)} • Densidade de borda: ${fmt(lm.edge_density)} m/ha</div>
+  `;
+
+  const markovCard = $('sintese-markov-card');
+  if (pipelineState.lastMarkov) {
+    const md = pipelineState.lastMarkov;
+    markovCard.style.display = 'block';
+    markovCard.innerHTML = `
+      <div style="font-weight:700; margin-bottom:0.35rem;">🔮 Predição (Markov)</div>
+      <div>Último ano observado: ${md.ultimo_ano_observado} • Anos projetados: ${(md.anos_alvo || []).join(', ')}</div>
+    `;
+  } else {
+    markovCard.style.display = 'none';
+  }
+
+  const clusterCard = $('sintese-cluster-card');
+  if (pipelineState.lastCluster) {
+    const { algo, data } = pipelineState.lastCluster;
+    clusterCard.style.display = 'block';
+    clusterCard.innerHTML = algo === 'kmeans'
+      ? `<div style="font-weight:700; margin-bottom:0.35rem;">🧬 Agrupamento (K-Means)</div><div>${data.k} cluster(s) • Silhouette: ${data.silhouette != null ? data.silhouette.toFixed(3) : '—'}</div>`
+      : `<div style="font-weight:700; margin-bottom:0.35rem;">🧬 Agrupamento (DBSCAN)</div><div>${data.n_clusters} cluster(s) • ${data.n_noise} outlier(s)</div>`;
+  } else {
+    clusterCard.style.display = 'none';
+  }
+
+  const batchCard = $('sintese-batch-card');
+  if (pipelineState.lastMunicipioBatch) {
+    const b = pipelineState.lastMunicipioBatch;
+    batchCard.style.display = 'block';
+    const erroCount = (b.erros || []).length;
+    batchCard.innerHTML = `
+      <div style="font-weight:700; margin-bottom:0.35rem;">📦 Lote por município</div>
+      <div>${b.sucesso}/${b.total_municipios} município(s) processado(s)${erroCount ? ` • ${erroCount} com erro` : ''}</div>
+    `;
+  } else {
+    batchCard.style.display = 'none';
+  }
+}
+
+function downloadSynthesis(): void {
+  const payload = {
+    gerado_em: new Date().toISOString(),
+    metricas: pipelineState.lastMetrics,
+    markov: pipelineState.lastMarkov,
+    clustering: pipelineState.lastCluster,
+    lote_municipio: pipelineState.lastMunicipioBatch,
+  };
+  const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
+  const anchor = document.createElement('a');
+  anchor.setAttribute('href', dataStr);
+  anchor.setAttribute('download', 'sintese_analise.json');
+  anchor.click();
+  showToast('Síntese exportada em JSON.', 'success');
+}
+
 // Estado do Tour do Avatar
 type AvatarKey = 'maria_julia' | 'pedro';
 interface TourStep {
@@ -156,6 +395,7 @@ async function checkAuthSession(): Promise<void> {
     bypassShell.style.display = 'flex';
     loadGeeCredentialsStatus();
     updateStepper();
+    refreshHistoryUnlock();
     return;
   }
 
@@ -179,6 +419,7 @@ async function checkAuthSession(): Promise<void> {
     appShell.style.display = 'flex';
     loadGeeCredentialsStatus();
     updateStepper();
+    refreshHistoryUnlock();
   } else {
     accessToken = null;
     localStorage.removeItem('user_email');
@@ -324,16 +565,30 @@ function updateMapMarker(): void {
 
 // Alternar entre Abas da Aplicação
 function switchTab(evt: Event | null, tabId: string): void {
+  if (isTabLocked(tabId)) {
+    if (evt) evt.preventDefault();
+    showToast('Calcule uma análise de paisagem na Etapa 3 antes de acessar esta etapa.', 'error');
+    return;
+  }
+
   currentTab = tabId;
   document.querySelectorAll<HTMLElement>('.tab-content').forEach(el => el.style.display = 'none');
   document.querySelectorAll<HTMLElement>('.tab-btn').forEach(el => el.classList.remove('active'));
 
   $(tabId).style.display = 'block';
   if (evt && evt.currentTarget) (evt.currentTarget as HTMLElement).classList.add('active');
+  else {
+    const btn = document.querySelector<HTMLElement>(`.sidebar .tab-btn[data-tab="${tabId}"]`);
+    if (btn) btn.classList.add('active');
+  }
 
   if (tabId === 'tab-sse') {
     loadSseMatrix();
+  } else if (tabId === 'tab-sintese') {
+    renderSynthesis();
   }
+
+  updateGlobalWizard();
 }
 
 // Acessibilidade (Alto Contraste e Fonte) — preferências persistidas em
@@ -373,6 +628,7 @@ function toggleRoiInputs(): void {
   const type = $<HTMLSelectElement>('roi-type').value;
   $('point-inputs').style.display = type === 'point' ? 'block' : 'none';
   $('municipio-inputs').style.display = type === 'municipio' ? 'block' : 'none';
+  $('shapefile-inputs').style.display = type === 'shapefile' ? 'block' : 'none';
   if (type === 'point' && map) setTimeout(() => map.invalidateSize(), 200);
 }
 
@@ -449,14 +705,19 @@ async function loadGeeCredentialsStatus(): Promise<void> {
 // o botão de calcular quando os passos 1 e 2 estiverem completos.
 function updateStepper(): void {
   const roiType = $<HTMLSelectElement>('roi-type').value;
-  const step1Done = roiType === 'municipio'
-    ? !!$<HTMLSelectElement>('select-municipio').value
-    : !!selectedPoint;
+  if (roiType === 'municipio') {
+    step1Done = !!$<HTMLSelectElement>('select-municipio').value;
+  } else if (roiType === 'shapefile') {
+    const shpInput = document.getElementById('roi-shp-files') as HTMLInputElement | null;
+    step1Done = !!(shpInput && shpInput.files && shpInput.files.length > 0);
+  } else {
+    step1Done = !!selectedPoint;
+  }
 
   const dataSource = $<HTMLSelectElement>('data-source').value;
   const tifInput = document.getElementById('tif-file') as HTMLInputElement | null;
   const hasTif = !!(tifInput && tifInput.files && tifInput.files.length > 0);
-  const step2Done = dataSource === 'mapbiomas' ? hasGeeCredentials : hasTif;
+  step2Done = dataSource === 'mapbiomas' ? hasGeeCredentials : hasTif;
 
   const setStepState = (n: number, done: boolean, pendingLabel: string, doneLabel: string) => {
     const el = $(`step-${n}`);
@@ -485,6 +746,8 @@ function updateStepper(): void {
     ? 'Tudo pronto — pode calcular.'
     : 'Disponível assim que os passos 1 e 2 estiverem completos.';
   ($('btn-compute') as HTMLButtonElement).disabled = !step3Ready;
+
+  updateGlobalWizard();
 }
 
 async function saveGeeCredentials(): Promise<void> {
@@ -515,6 +778,12 @@ async function saveGeeCredentials(): Promise<void> {
 function validateAnalysisInputs(roiType: string, dataSource: string, tifFile: File | null): string | null {
   if (roiType === 'municipio' && !$<HTMLSelectElement>('select-municipio').value) {
     return 'Selecione um estado e um município antes de calcular.';
+  }
+  if (roiType === 'shapefile') {
+    const shpInput = $<HTMLInputElement>('roi-shp-files');
+    if (!shpInput.files || shpInput.files.length === 0) {
+      return 'Envie o shapefile da área (.zip/.geojson ou os componentes .shp/.shx/.dbf) antes de calcular.';
+    }
   }
   if (dataSource === 'mapbiomas') {
     if (roiType === 'point' && !selectedPoint) {
@@ -550,16 +819,34 @@ async function runLandscapeAnalysis(): Promise<void> {
   const formData = new FormData();
   formData.append('data_source', dataSource);
 
+  let contextForPrefill: PipelineContext;
   if (roiType === 'municipio') {
     const ufSelect = $<HTMLSelectElement>('select-uf');
     const muniSelect = $<HTMLSelectElement>('select-municipio');
     formData.append('municipio_codigo', muniSelect.value);
     formData.append('municipio_nome', muniSelect.selectedOptions[0] ? muniSelect.selectedOptions[0].textContent || '' : '');
     formData.append('municipio_uf', ufSelect.value);
+    contextForPrefill = { roiType, municipioCodigo: muniSelect.value };
+  } else if (roiType === 'shapefile') {
+    const shpFiles = $<HTMLInputElement>('roi-shp-files').files;
+    if (shpFiles) {
+      for (let i = 0; i < shpFiles.length; i++) {
+        formData.append('shp_files', shpFiles[i]);
+      }
+    }
+    contextForPrefill = { roiType };
   } else if (selectedPoint) {
     formData.append('point_lon', String(selectedPoint.lng));
     formData.append('point_lat', String(selectedPoint.lat));
     formData.append('buffer_dist', $<HTMLInputElement>('buffer-dist').value);
+    contextForPrefill = {
+      roiType,
+      pointLon: selectedPoint.lng,
+      pointLat: selectedPoint.lat,
+      bufferDist: parseFloat($<HTMLInputElement>('buffer-dist').value),
+    };
+  } else {
+    contextForPrefill = { roiType };
   }
 
   if (dataSource === 'geotiff' && tifFile) {
@@ -580,6 +867,14 @@ async function runLandscapeAnalysis(): Promise<void> {
     $('results-placeholder').style.display = 'none';
     $('results-content').style.display = 'block';
     renderMetricsResult(data);
+
+    pipelineState.hasMetrics = true;
+    pipelineState.lastMetrics = data;
+    pipelineState.lastContext = contextForPrefill;
+    $('next-steps-panel').style.display = 'block';
+    updateNavLocks();
+    updateGlobalWizard();
+
     showToast('Análise concluída com sucesso.', 'success');
   } catch (err: any) {
     showToast(err.message, 'error');
@@ -651,6 +946,9 @@ async function loadSseMatrix(): Promise<void> {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Falha ao carregar a Matriz SSE.');
 
+    lastSseMatrix = data;
+    $<HTMLButtonElement>('btn-export-matrix-excel').style.display = data.records && data.records.length > 0 ? 'inline-block' : 'none';
+
     if (!data.records || data.records.length === 0) {
       head.innerHTML = '<th>Nenhuma análise salva ainda — calcule uma análise na aba "Análise de Paisagem" para começar.</th>';
       body.innerHTML = '';
@@ -662,6 +960,20 @@ async function loadSseMatrix(): Promise<void> {
     body.innerHTML = '';
     showToast(err.message, 'error');
   }
+}
+
+// Exporta a Matriz SSE (base de dados por trás do agrupamento) para .xlsx,
+// pronta para gráficos no Excel — gerado 100% no navegador via SheetJS
+// (CDN, ver index.html), sem chamada nova ao backend.
+function exportSseMatrixToExcel(): void {
+  if (!lastSseMatrix || !lastSseMatrix.records || lastSseMatrix.records.length === 0) {
+    showToast('Carregue a Matriz SSE (com ao menos uma análise salva) antes de exportar.', 'error');
+    return;
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lastSseMatrix.records), 'Matriz_SSE');
+  XLSX.writeFile(wb, `matriz_sse_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  showToast('Matriz exportada — abra no Excel para montar o gráfico.', 'success');
 }
 
 function renderSseTable(records: Array<Record<string, any>>): void {
@@ -693,6 +1005,8 @@ async function runClustering(): Promise<void> {
     const matrixRes = await fetch('/api/sse/matrix', { headers: authHeaders() });
     const matrixData = await matrixRes.json();
     if (!matrixRes.ok) throw new Error(matrixData.detail || 'Falha ao carregar a Matriz SSE.');
+    lastSseMatrix = matrixData;
+    $<HTMLButtonElement>('btn-export-matrix-excel').style.display = matrixData.records && matrixData.records.length > 0 ? 'inline-block' : 'none';
 
     const excluded = ['point_lon', 'point_lat', 'buffer_dist', 'ano'];
     const featureCols = (matrixData.numeric_columns || []).filter((c: string) => !excluded.includes(c));
@@ -720,6 +1034,9 @@ async function runClustering(): Promise<void> {
     if (!res.ok) throw new Error(data.detail || 'Falha ao executar o agrupamento.');
 
     renderClusterResult(algo, data);
+    pipelineState.lastCluster = { algo: algo as 'kmeans' | 'dbscan', data };
+    updateGlobalWizard();
+    $<HTMLButtonElement>('btn-export-cluster-excel').style.display = 'inline-block';
     showToast(algo === 'kmeans' ? 'Agrupamento concluído com sucesso.' : 'Análise de densidade concluída.', 'success');
   } catch (err: any) {
     showToast(err.message, 'error');
@@ -763,6 +1080,47 @@ function renderClusterResult(algo: string, data: any): void {
     algo === 'kmeans'
       ? `✅ K-Means concluído: ${data.k} cluster(s) formado(s) • Silhouette Score: ${data.silhouette != null ? data.silhouette.toFixed(3) : '—'}`
       : `✅ DBSCAN concluído: ${data.n_clusters} cluster(s) denso(s) • ${data.n_noise} outlier(s) identificado(s)`;
+}
+
+// Exporta o resultado do agrupamento (pontos PCA rotulados por cluster,
+// perfis médios por cluster e, no K-Means, a curva do cotovelo) para .xlsx —
+// cada aba já pronta para virar um gráfico no Excel (dispersão PCA×cluster,
+// barras por perfil, linha da curva do cotovelo). Gerado 100% no navegador
+// via SheetJS (CDN, ver index.html), sem chamada nova ao backend.
+function exportClusterToExcel(): void {
+  if (!pipelineState.lastCluster) {
+    showToast('Execute um agrupamento (K-Means ou DBSCAN) antes de exportar.', 'error');
+    return;
+  }
+  const { algo, data } = pipelineState.lastCluster;
+  const wb = XLSX.utils.book_new();
+
+  const pcaRows: any[] = data.pca_data || [];
+  if (pcaRows.length > 0) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pcaRows), 'PCA_Clusters');
+  }
+
+  const profiles = data.cluster_profiles || {};
+  const profileRows = Object.keys(profiles).map((clusterKey) => ({ cluster: clusterKey, ...profiles[clusterKey] }));
+  if (profileRows.length > 0) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(profileRows), 'Perfis_Cluster');
+  }
+
+  if (algo === 'kmeans' && Array.isArray(data.elbow_curve) && data.elbow_curve.length > 0) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.elbow_curve), 'Curva_Cotovelo');
+  }
+
+  if (lastSseMatrix && lastSseMatrix.records && lastSseMatrix.records.length > 0) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lastSseMatrix.records), 'Matriz_SSE_Base');
+  }
+
+  if (wb.SheetNames.length === 0) {
+    showToast('Nada para exportar neste resultado de agrupamento.', 'error');
+    return;
+  }
+
+  XLSX.writeFile(wb, `agrupamento_${algo}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  showToast('Planilha exportada — abra no Excel para montar o gráfico.', 'success');
 }
 
 // Gestão de Avatares 3D e Onboarding
@@ -863,6 +1221,7 @@ function toggleMarkovRoiInputs(): void {
   const type = $<HTMLSelectElement>('markov-roi-type').value;
   $('markov-point-inputs').style.display = type === 'point' ? 'block' : 'none';
   $('markov-municipio-inputs').style.display = type === 'municipio' ? 'block' : 'none';
+  $('markov-shapefile-inputs').style.display = type === 'shapefile' ? 'block' : 'none';
 }
 
 async function runMarkovPrediction(event: Event): Promise<void> {
@@ -879,6 +1238,14 @@ async function runMarkovPrediction(event: Event): Promise<void> {
     return;
   }
 
+  if (roiType === 'shapefile') {
+    const shpFiles = $<HTMLInputElement>('markov-shp-files').files;
+    if (!shpFiles || shpFiles.length === 0) {
+      showToast('Envie o shapefile da área (.zip/.geojson ou os componentes .shp/.shx/.dbf) antes de gerar a predição.', 'error');
+      return;
+    }
+  }
+
   const formData = new FormData();
   for (let i = 0; i < fileInput.files.length; i++) {
     formData.append('tif_files', fileInput.files[i]);
@@ -891,6 +1258,13 @@ async function runMarkovPrediction(event: Event): Promise<void> {
     formData.append('buffer_dist', $<HTMLInputElement>('markov-buffer').value);
   } else if (roiType === 'municipio') {
     formData.append('municipio_codigo', $<HTMLInputElement>('markov-municipio-codigo').value);
+  } else if (roiType === 'shapefile') {
+    const shpFiles = $<HTMLInputElement>('markov-shp-files').files;
+    if (shpFiles) {
+      for (let i = 0; i < shpFiles.length; i++) {
+        formData.append('shp_files', shpFiles[i]);
+      }
+    }
   }
 
   btn.disabled = true;
@@ -909,6 +1283,8 @@ async function runMarkovPrediction(event: Event): Promise<void> {
     
     $('markov-results').style.display = 'block';
     renderMarkovResults(data);
+    pipelineState.lastMarkov = data;
+    updateGlobalWizard();
     showToast('Predição gerada com sucesso!', 'success');
   } catch (err: any) {
     showToast(err.message, 'error');
@@ -1044,6 +1420,8 @@ async function runMunicipioBatch(event: Event): Promise<void> {
 
     $('municipio-batch-results').style.display = 'block';
     renderMunicipioBatchResults(data);
+    pipelineState.lastMunicipioBatch = data;
+    updateGlobalWizard();
     showToast(`Lote concluído: ${data.sucesso}/${data.total_municipios} municípios processados.`, 'success');
   } catch (err: any) {
     showToast(err.message, 'error');

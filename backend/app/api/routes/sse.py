@@ -13,6 +13,7 @@ import pandas as pd
 from app.api.deps import get_current_user
 from app.db import metric_results as metric_results_db
 from app.services import clustering
+from app.services import landscape_core
 
 
 def _build_sse_matrix(user_email: str) -> pd.DataFrame:
@@ -96,11 +97,15 @@ def get_sse_matrix(current_user: str = Depends(get_current_user)):
     import numpy as np
     numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
 
-    return {
+    # Métricas de nível de paisagem (ex.: contágio) viram NaN quando a
+    # análise salva tem poucas classes de cobertura do solo — sanitiza antes
+    # de responder, senão o JSONResponse (allow_nan=False) derruba a rota
+    # inteira com 500 "Out of range float values are not JSON compliant".
+    return landscape_core.sanitize_for_json({
         "records": records,
         "columns": columns,
         "numeric_columns": numeric_columns,
-    }
+    })
 
 
 @router.post("/cluster/kmeans")
@@ -120,14 +125,17 @@ def run_kmeans_clustering(
     if req.show_elbow:
         elbow_df = clustering.compute_elbow_curve(df, req.feature_cols, max_k=min(10, len(df)))
 
-    return {
+    return landscape_core.sanitize_for_json({
         "k": res["k"],
         "silhouette": res["silhouette"],
         "inertia": res["inertia"],
         "pca_data": res["pca_df"].to_dict(orient="records") if not res["pca_df"].empty else [],
         "cluster_profiles": res["cluster_profiles"].to_dict(orient="index") if not res["cluster_profiles"].empty else {},
         "elbow_curve": elbow_df.to_dict(orient="records") if not elbow_df.empty else [],
-    }
+        # Envelope do pipeline (wizard do frontend) — aditivo.
+        "step": "cluster_completed",
+        "next_available_actions": ["export"],
+    })
 
 
 @router.post("/cluster/dbscan")
@@ -144,9 +152,12 @@ def run_dbscan_clustering(
 
     res = clustering.run_dbscan(df, req.feature_cols, eps=req.eps, min_samples=req.min_samples)
 
-    return {
+    return landscape_core.sanitize_for_json({
         "n_clusters": res["n_clusters"],
         "n_noise": res["n_noise"],
         "pca_data": res["pca_df"].to_dict(orient="records") if not res["pca_df"].empty else [],
         "cluster_profiles": res["cluster_profiles"].to_dict(orient="index") if not res["cluster_profiles"].empty else {},
-    }
+        # Envelope do pipeline (wizard do frontend) — aditivo.
+        "step": "cluster_completed",
+        "next_available_actions": ["export"],
+    })

@@ -20,11 +20,13 @@ deliberada em relação ao `SHDI`/`short label` antigo, não um bug).
 correlação) não tem equivalente no backend — o frontend novo renderiza isso
 no cliente — não portada.
 """
+import math
 import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
 if str(BACKEND_DIR) not in sys.path:
@@ -132,3 +134,60 @@ def test_build_sse_matrix_scoped_per_user(sse_db):
 
     assert sse_routes._build_sse_matrix("user1@example.com").shape[0] == 1
     assert sse_routes._build_sse_matrix("user2@example.com").empty
+
+
+# --- Teste de regressão HTTP: NaN em landscape_metrics quebrava GET
+# /api/sse/matrix com 500 "Out of range float values are not JSON compliant"
+# (JSONResponse do Starlette usa allow_nan=False) — mesmo bug já corrigido
+# em /api/metrics/calculate e /api/municipio-batch/run (sanitize_for_json),
+# mas até agora não replicado em sse.py. Município pequeno/paisagem com
+# poucas classes gera NaN real no contágio (PyLandStats), então isso não é
+# um caso sintético raro — é o que o usuário viu em produção.
+
+
+@pytest.fixture
+async def sse_http_client(tmp_path, monkeypatch):
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "sse_http_test.db"))
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-change-me")
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    for module_name in list(sys.modules):
+        if module_name == "app" or module_name.startswith("app."):
+            del sys.modules[module_name]
+
+    from app.main import app  # type: ignore
+    from app.db.schema import init_db
+
+    init_db()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver", follow_redirects=True) as client:
+        yield client
+
+
+@pytest.mark.anyio
+async def test_sse_matrix_route_survives_nan_landscape_metric(sse_http_client: AsyncClient):
+    from app.db import metric_results as live_metric_results_db
+
+    payload = {"email": "sse-nan@example.com", "password": "secret123", "password_confirm": "secret123"}
+    register = await sse_http_client.post("/api/auth/register", json=payload)
+    assert register.status_code == 200
+    token = register.json()["access_token"]
+
+    df = _class_metrics_df({"Floresta": 100.0})
+    live_metric_results_db.save_metric_result(
+        "sse-nan@example.com", "fp-nan", "Município pequeno/GO",
+        "MapBiomas (Google Earth Engine)", None, None, df,
+        {"shannon_diversity_index": 0.0, "contagion_index": math.nan},
+    )
+
+    response = await sse_http_client.get(
+        "/api/sse/matrix", headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    record = response.json()["records"][0]
+    assert record["landscape_contagion_index"] is None
+    assert record["landscape_shannon_diversity_index"] == pytest.approx(0.0)

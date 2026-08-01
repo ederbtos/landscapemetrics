@@ -26,10 +26,14 @@ async def predict_future_years(
     municipio_codigo: Optional[str] = Form(None),
     target_years: str = Form("2030,2040,2050"),
     tif_files: List[UploadFile] = File(...),
+    shp_files: Optional[List[UploadFile]] = File(None),
     current_user: str = Depends(get_current_user),
 ):
     """Calcula a matriz de transição a partir de múltiplos GeoTIFFs (de anos
-    diferentes) e projeta a proporção das classes para anos futuros."""
+    diferentes) e projeta a proporção das classes para anos futuros. A área
+    de interesse usada para recortar cada GeoTIFF é, em ordem de prioridade:
+    município do IBGE (`municipio_codigo`) > shapefile próprio (`shp_files`)
+    > ponto+buffer > raster inteiro (nenhum dos anteriores)."""
     if len(tif_files) < 2:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -61,6 +65,21 @@ async def predict_future_years(
                 detail=f"Não foi possível obter o limite territorial do município (código {municipio_codigo})."
             )
 
+    custom_region_geojson = None
+    if shp_files:
+        custom_region_files = [
+            landscape_service._UploadedFileAdapter(f.filename, await f.read()) for f in shp_files
+        ]
+        try:
+            custom_region_geojson = landscape_core.uploaded_shapefile_to_region_geojson(custom_region_files)
+        except Exception as shp_error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Não foi possível ler o shapefile enviado como área de interesse: {shp_error}"
+            ) from shp_error
+
+    region_geojson = municipio_geojson or custom_region_geojson
+
     class_arrays = []
     years = []
     temp_paths = []
@@ -79,9 +98,9 @@ async def predict_future_years(
                 )
             years.append(ano)
             
-            if municipio_geojson is not None:
+            if region_geojson is not None:
                 np_arr, res, _reproj = landscape_core.extract_landscape_from_tif(
-                    uploaded, region_geojson=municipio_geojson, cleanup=False, temp_path_out=temp_paths
+                    uploaded, region_geojson=region_geojson, cleanup=False, temp_path_out=temp_paths
                 )
             elif point_lonlat is not None and buffer_dist is not None:
                 np_arr, res, _reproj = landscape_core.extract_landscape_from_tif(
@@ -149,7 +168,10 @@ async def predict_future_years(
             "matriz_transicao": transition_df.to_dict(orient="index"),
             "anos_alvo": parsed_target_years,
             "ultimo_ano_observado": last_year,
-            "classes_mapbiomas": landscape_core.MAPBIOMAS_LEGEND_KEYS
+            "classes_mapbiomas": landscape_core.MAPBIOMAS_LEGEND_KEYS,
+            # Envelope do pipeline (wizard do frontend) — aditivo.
+            "step": "markov_predicted",
+            "next_available_actions": ["cluster", "export"],
         }
 
     except HTTPException:

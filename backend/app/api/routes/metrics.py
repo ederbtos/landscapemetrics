@@ -2,7 +2,7 @@
 Rotas para Cálculo e Histórico de Métricas de Paisagem (PyLandStats + MapBiomas + GeoTIFF)
 """
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
@@ -40,14 +40,23 @@ async def calculate_metrics(
     municipio_nome: Optional[str] = Form(None),
     municipio_uf: Optional[str] = Form(None),
     tif_file: Optional[UploadFile] = File(None),
+    shp_files: Optional[List[UploadFile]] = File(None),
     current_user: str = Depends(get_current_user),
 ):
-    """Calcula as métricas de paisagem (PyLandStats) para o ponto/buffer ou
-    município, a partir de dados reais (MapBiomas/Earth Engine ou um GeoTIFF
-    próprio enviado) — nunca gera uma análise substituta com dados de
-    exemplo se a extração real falhar."""
+    """Calcula as métricas de paisagem (PyLandStats) para o ponto/buffer,
+    município ou área definida por um shapefile próprio (`shp_files` — .zip/
+    .geojson único, ou os componentes soltos .shp+.shx+.dbf+.prj), a partir
+    de dados reais (MapBiomas/Earth Engine ou um GeoTIFF próprio enviado) —
+    nunca gera uma análise substituta com dados de exemplo se a extração
+    real falhar."""
     tif_bytes = await tif_file.read() if tif_file is not None else None
     tif_filename = tif_file.filename if tif_file is not None else None
+
+    custom_region_files = None
+    if shp_files:
+        custom_region_files = [
+            landscape_service._UploadedFileAdapter(f.filename, await f.read()) for f in shp_files
+        ]
 
     credentials = None
     if data_source == "mapbiomas":
@@ -64,6 +73,7 @@ async def calculate_metrics(
             municipio_uf=municipio_uf,
             tif_filename=tif_filename,
             tif_bytes=tif_bytes,
+            custom_region_files=custom_region_files,
             credentials=credentials,
         )
     except landscape_service.LandscapeAnalysisError as exc:
@@ -98,4 +108,8 @@ async def calculate_metrics(
         "ano": result["ano"],
         "class_metrics": class_metrics_df.to_dict(orient="index"),
         "landscape_metrics": result["landscape_metrics"],
+        # Envelope do pipeline (wizard do frontend, ver frontend-src/app.ts) —
+        # aditivo, não remove nenhum campo consumido antes desta mudança.
+        "step": "metrics_calculated",
+        "next_available_actions": ["markov", "cluster", "municipio_batch", "export"],
     })

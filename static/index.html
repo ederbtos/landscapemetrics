@@ -19,9 +19,10 @@
   <!-- Estilos da Aplicação -->
   <link rel="stylesheet" href="/style.css">
 
-  <!-- Chart.js & Leaflet JS -->
+  <!-- Chart.js, Leaflet & SheetJS (exportação .xlsx) -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -57,22 +58,25 @@
 
     <!-- Menu Lateral -->
     <aside class="sidebar" aria-label="Navegação principal">
-      <button class="tab-btn active" onclick="switchTab(event, 'tab-analise')">
+      <button class="tab-btn active" data-tab="tab-analise" onclick="switchTab(event, 'tab-analise')">
         <span class="tab-btn-icon">📍</span> Análise de Paisagem
       </button>
-      <button class="tab-btn" onclick="switchTab(event, 'tab-sse')">
+      <button class="tab-btn" id="nav-tab-sse" data-tab="tab-sse" onclick="switchTab(event, 'tab-sse')">
         <span class="tab-btn-icon">🧬</span> Matriz Socioecológica & Clustering
       </button>
-      <button class="tab-btn" onclick="switchTab(event, 'tab-lgpd')">
+      <button class="tab-btn" data-tab="tab-lgpd" onclick="switchTab(event, 'tab-lgpd')">
         <span class="tab-btn-icon">📜</span> Privacidade & LGPD
       </button>
-      <button class="tab-btn" onclick="switchTab(event, 'tab-markov')">
+      <button class="tab-btn" id="nav-tab-markov" data-tab="tab-markov" onclick="switchTab(event, 'tab-markov')">
         <span class="tab-btn-icon">🔮</span> Predição (Markov)
       </button>
-      <button class="tab-btn" onclick="switchTab(event, 'tab-municipio-batch')">
+      <button class="tab-btn" id="nav-tab-municipio-batch" data-tab="tab-municipio-batch" onclick="switchTab(event, 'tab-municipio-batch')">
         <span class="tab-btn-icon">📦</span> Lote por Município
       </button>
-      <button class="tab-btn" onclick="switchTab(event, 'tab-ajuda')">
+      <button class="tab-btn" id="nav-tab-sintese" data-tab="tab-sintese" onclick="switchTab(event, 'tab-sintese')">
+        <span class="tab-btn-icon">🏁</span> Síntese & Exportação
+      </button>
+      <button class="tab-btn" data-tab="tab-ajuda" onclick="switchTab(event, 'tab-ajuda')">
         <span class="tab-btn-icon">❓</span> Ajuda & Guia
       </button>
     </aside>
@@ -84,12 +88,14 @@
       <div class="hero-copy">
         <p class="eyebrow">Fluxo guiado</p>
         <h2>Transforme dados geoespaciais em insights claros</h2>
-        <p>Escolha uma área, calcule métricas de paisagem e explore padrões socioecológicos em poucos passos.</p>
+        <p>Siga as 5 etapas: área & contexto, fonte de dados, métricas, análise avançada e síntese final. As etapas 4 e 5 liberam depois que a primeira análise for calculada.</p>
       </div>
-      <div class="hero-steps">
-        <div class="step-pill"><span>1</span> Defina a área</div>
-        <div class="step-pill"><span>2</span> Escolha a fonte</div>
-        <div class="step-pill"><span>3</span> Explore métricas e clusters</div>
+      <div class="hero-steps" id="global-wizard">
+        <div class="step-pill" id="wizard-step-1" onclick="goToWizardStep(1)"><span>1</span> Área & Contexto</div>
+        <div class="step-pill" id="wizard-step-2" onclick="goToWizardStep(2)"><span>2</span> Fonte de Dados</div>
+        <div class="step-pill" id="wizard-step-3" onclick="goToWizardStep(3)"><span>3</span> Métricas</div>
+        <div class="step-pill locked" id="wizard-step-4" onclick="goToWizardStep(4)"><span>4</span> Análise Avançada</div>
+        <div class="step-pill locked" id="wizard-step-5" onclick="goToWizardStep(5)"><span>5</span> Síntese & Exportação</div>
       </div>
     </section>
 
@@ -121,6 +127,7 @@
                   <select id="roi-type" onchange="toggleRoiInputs(); updateStepper();">
                     <option value="point">📌 Ponto + Buffer</option>
                     <option value="municipio">🏘️ Limite Municipal (IBGE)</option>
+                    <option value="shapefile">📁 Shapefile Próprio (Polígono)</option>
                   </select>
                 </div>
 
@@ -133,6 +140,17 @@
                   <div class="form-group">
                     <label>Município:</label>
                     <select id="select-municipio" onchange="updateStepper()"><option>Selecione um estado...</option></select>
+                  </div>
+                </div>
+
+                <!-- Upload de Shapefile Próprio -->
+                <div id="shapefile-inputs" style="display: none;">
+                  <div class="form-group">
+                    <label>Shapefile da área (.zip/.geojson, ou selecione .shp+.shx+.dbf+.prj juntos):</label>
+                    <input type="file" id="roi-shp-files" multiple accept=".zip,.geojson,.shp,.shx,.dbf,.prj,.cpg" onchange="updateStepper()">
+                    <small style="color: var(--text-muted); display: block; margin-top: 0.25rem;">
+                      Dica: se o .zip não for reconhecido, selecione os arquivos soltos (.shp, .shx, .dbf e, se possível, .prj) juntos no seletor. Mais de um polígono no arquivo é unido numa única área.
+                    </small>
                   </div>
                 </div>
 
@@ -230,6 +248,25 @@
                 <tbody></tbody>
               </table>
             </div>
+
+            <details class="chart-help" style="margin-top: 1.25rem;">
+              <summary>ℹ️ Como interpretar estes resultados</summary>
+              <div class="chart-help-body">
+                <p><b>Gráfico de barras</b>: proporção (%) da paisagem ocupada por cada classe de cobertura do solo — quanto maior a barra, mais dominante aquela classe na área analisada.</p>
+                <p><b>Tabela por classe</b>: <code>% Paisagem</code> é a mesma proporção do gráfico; <code>NP</code> é o número de manchas (fragmentos) daquela classe — mais manchas geralmente indica maior fragmentação; <code>ED</code> é a densidade de borda (metros de perímetro por hectare) — quanto maior, mais recortada/irregular é a forma das manchas.</p>
+                <p><b>Cards no topo</b>: <code>SHDI</code> (Diversidade de Shannon) mede quão heterogênea é a paisagem entre classes — perto de 0 significa que uma classe domina quase tudo, valores maiores indicam uma mistura mais equilibrada. <code>Densidade de manchas</code> e <code>Densidade de borda</code> são as mesmas ideias acima, mas em nível de paisagem inteira (todas as classes juntas), não por classe.</p>
+              </div>
+            </details>
+
+            <div id="next-steps-panel" style="display: none; margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color);">
+              <div style="font-weight: 600; margin-bottom: 0.75rem;">Etapa 4 — escolha uma análise avançada (opcional):</div>
+              <div style="display: flex; flex-wrap: wrap; gap: 0.75rem;">
+                <button class="btn-outline" onclick="goToAdvancedStep('tab-markov')">🔮 Tendência temporal (Markov)</button>
+                <button class="btn-outline" onclick="goToAdvancedStep('tab-sse')">🧬 Agrupar com histórico (SSE)</button>
+                <button class="btn-outline" onclick="goToAdvancedStep('tab-municipio-batch')">📦 Processar em lote</button>
+                <button class="btn-primary" onclick="goToAdvancedStep('tab-sintese')">🏁 Ir para síntese & exportação</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -243,6 +280,7 @@
           Consolida suas análises salvas numa matriz multivariada de paisagens, integrando métricas do FRAGSTATS e dados populacionais do IBGE.
         </p>
         <button class="btn-outline" onclick="loadSseMatrix()" style="margin-top: 1rem;">🔄 Atualizar Matriz</button>
+        <button id="btn-export-matrix-excel" class="btn-outline" style="margin-top: 1rem; margin-left: 0.5rem; display: none;" onclick="exportSseMatrixToExcel()">📥 Exportar Matriz (.xlsx)</button>
         <div style="overflow-x: auto; margin-top: 1rem;">
           <table id="sse-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
             <thead><tr id="sse-table-head"><th>Nenhuma análise salva ainda</th></tr></thead>
@@ -289,6 +327,15 @@
             <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 0.5rem;">Visualização 2D (PCA) dos Clusters:</div>
             <canvas id="pca-chart" height="220"></canvas>
             <div id="cluster-summary-info" style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.75rem;"></div>
+            <button id="btn-export-cluster-excel" class="btn-outline" style="margin-top: 0.75rem; display: none;" onclick="exportClusterToExcel()">📥 Exportar agrupamento para Excel (.xlsx)</button>
+
+            <details class="chart-help" style="margin-top: 0.75rem;">
+              <summary>ℹ️ Como interpretar este gráfico</summary>
+              <div class="chart-help-body">
+                <p>Cada ponto é UMA das suas análises salvas, projetada de dezenas de variáveis (proporção de classes + métricas de paisagem) para só 2 eixos (PCA 1 e PCA 2) — análises com composição de paisagem parecida ficam próximas no gráfico.</p>
+                <p><b>Cor</b> = cluster atribuído pelo algoritmo. No <b>K-Means</b>, todo ponto pertence a um dos K grupos definidos; o <b>Silhouette Score</b> (perto de 1 = clusters bem separados, perto de 0 = sobrepostos) indica a qualidade do agrupamento. No <b>DBSCAN</b>, pontos marcados como <b>Outlier</b> (vermelho) não se encaixaram em nenhuma região densa — não é erro, é uma análise atípica em relação às demais.</p>
+              </div>
+            </details>
           </div>
         </div>
       </div>
@@ -317,6 +364,7 @@
               <option value="none">Nenhum (Raster Inteiro)</option>
               <option value="point">📌 Ponto + Buffer</option>
               <option value="municipio">🏘️ Limite Municipal (IBGE)</option>
+              <option value="shapefile">📁 Shapefile Próprio (Polígono)</option>
             </select>
           </div>
 
@@ -324,6 +372,16 @@
             <div class="form-group">
               <label>Código do Município (IBGE):</label>
               <input type="text" id="markov-municipio-codigo" placeholder="Ex: 3550308">
+            </div>
+          </div>
+
+          <div id="markov-shapefile-inputs" style="display: none;">
+            <div class="form-group">
+              <label>Shapefile da área (.zip/.geojson, ou selecione .shp+.shx+.dbf+.prj juntos):</label>
+              <input type="file" id="markov-shp-files" multiple accept=".zip,.geojson,.shp,.shx,.dbf,.prj,.cpg">
+              <small style="color: var(--text-muted); display: block; margin-top: 0.25rem;">
+                Dica: se o .zip não for reconhecido, selecione os arquivos soltos juntos no seletor. Mais de um polígono no arquivo é unido numa única área — cada GeoTIFF do lote é recortado por ela.
+              </small>
             </div>
           </div>
 
@@ -357,7 +415,7 @@
         <div id="markov-results" style="display: none; margin-top: 2rem;">
           <h3 style="margin-bottom: 1rem;">Resultados da Predição</h3>
           <canvas id="markov-chart" height="250"></canvas>
-          
+
           <h4 style="margin-top: 2rem; margin-bottom: 0.5rem;">Matriz de Transição de Probabilidade</h4>
           <div style="overflow-x: auto;">
             <table id="markov-transition-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
@@ -365,6 +423,15 @@
               <tbody id="markov-table-body"></tbody>
             </table>
           </div>
+
+          <details class="chart-help" style="margin-top: 1.25rem;" open>
+            <summary>ℹ️ Como interpretar esta predição</summary>
+            <div class="chart-help-body">
+              <p><b>Linha sólida</b> = histórico observado, extraído dos GeoTIFFs enviados. <b>Linha tracejada</b> = projeção calculada a partir da matriz de transição — ancorada no último ano observado, para não gerar um salto visual entre o dado real e a projeção.</p>
+              <p><b>Matriz de transição</b> acima: cada célula é a probabilidade (0 a 1) de um pixel da classe da <b>linha</b> virar a classe da <b>coluna</b> no próximo intervalo — a diagonal mostra o quanto cada classe tende a permanecer estável.</p>
+              <p>⚠️ Método <b>não-espacial</b> (projeta só a proporção agregada de cada classe, não gera um mapa futuro) e assume que as probabilidades de transição observadas no histórico continuam constantes (estacionariedade) — trate como uma tendência, não como uma previsão exata.</p>
+            </div>
+          </details>
         </div>
       </div>
     </section>
@@ -419,6 +486,45 @@
               <tbody id="municipio-batch-table-body"></tbody>
             </table>
           </div>
+
+          <details class="chart-help" style="margin-top: 1.25rem;">
+            <summary>ℹ️ Como interpretar esta tabela</summary>
+            <div class="chart-help-body">
+              <p>Uma linha por município do shapefile enviado, com as mesmas métricas de nível de paisagem da Etapa 3 (SHDI, densidade de manchas, densidade de borda etc.) — calculadas contra o MESMO GeoTIFF para todos, então dá pra comparar municípios lado a lado.</p>
+              <p>Municípios que falharam (ex.: polígono fora da extensão do raster) aparecem só no resumo de erros no topo, não na tabela — o lote não para por causa de um município problemático.</p>
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- ABA: Síntese & Exportação (Etapa 5) -->
+    <section id="tab-sintese" class="tab-content" style="display: none;">
+      <div class="glass-card">
+        <div class="card-title">🏁 Síntese da Análise & Exportação</div>
+        <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem;">
+          Reúne os resultados já calculados nesta sessão (Etapas 3 e 4) num painel único, pronto para exportar.
+        </p>
+        <div id="sintese-empty" class="empty-state">
+          <div class="empty-state-icon">🏁</div>
+          <h3>Ainda não há resultados nesta sessão</h3>
+          <p>Calcule uma análise de paisagem na Etapa 3 para começar a montar sua síntese.</p>
+        </div>
+        <div id="sintese-content" style="display: none;">
+          <div id="sintese-metrics-card" class="sintese-card" style="margin-bottom: 1rem;"></div>
+          <div id="sintese-markov-card" class="sintese-card" style="margin-bottom: 1rem; display: none;"></div>
+          <div id="sintese-cluster-card" class="sintese-card" style="margin-bottom: 1rem; display: none;"></div>
+          <div id="sintese-batch-card" class="sintese-card" style="margin-bottom: 1rem; display: none;"></div>
+
+          <details class="chart-help" style="margin-bottom: 1rem;">
+            <summary>ℹ️ O que é esta síntese</summary>
+            <div class="chart-help-body">
+              <p>Cada card acima resume o que já foi calculado NESTA sessão do navegador: métricas de paisagem (Etapa 3) e, se você passou pela Etapa 4, também a predição Markov, o agrupamento SSE e/ou o lote por município — só aparecem os cards do que você de fato calculou.</p>
+              <p>Não recalcula nada: é só uma leitura do que já está na tela. O botão abaixo baixa tudo isso junto num único JSON, útil para guardar ou anexar a um relatório.</p>
+            </div>
+          </details>
+
+          <button class="btn-primary" onclick="downloadSynthesis()">📥 Baixar síntese (JSON)</button>
         </div>
       </div>
     </section>

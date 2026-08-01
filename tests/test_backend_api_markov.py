@@ -106,3 +106,32 @@ async def test_markov_predict_real_files_end_to_end(test_client):
     assert data["anos_alvo"] == [2030]
     assert len(data["historico"]) == 2
     assert "2030" in data["predicoes"] or 2030 in data["predicoes"]
+
+
+@pytest.mark.anyio
+async def test_markov_predict_with_custom_shapefile_roi(test_client):
+    """Área de interesse alternativa a ponto+buffer/município: shapefile
+    próprio (`shp_files`), mesma opção adicionada em /api/metrics/calculate
+    (ver landscape_core.uploaded_shapefile_to_region_geojson) — cada GeoTIFF
+    do lote é recortado pela mesma área antes de entrar na matriz de
+    transição."""
+    from tests.helpers import make_test_tif
+    from tests.test_backend_api_metrics_shapefile_roi import _polygon_shapefile_zip_bytes
+
+    token = await _register_user(test_client)
+    headers = {"Authorization": f"Bearer {token}"}
+    shp_bytes = _polygon_shapefile_zip_bytes()
+    files = [
+        ("tif_files", ("raster_2010.tif", make_test_tif(fill_value=3), "image/tiff")),
+        ("tif_files", ("raster_2020.tif", make_test_tif(fill_value=15), "image/tiff")),
+        ("shp_files", ("area.zip", shp_bytes, "application/zip")),
+    ]
+    response = await test_client.post(
+        "/api/markov/predict", headers=headers, files=files,
+        data={"target_years": "2030"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ultimo_ano_observado"] == 2020
+    assert len(data["historico"]) == 2
