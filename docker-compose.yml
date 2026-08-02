@@ -6,7 +6,7 @@ services:
     environment:
       JWT_SECRET_KEY: dev-jwt-secret-change-me
       APP_ENCRYPTION_KEY: dev-encryption-key-change-me
-      CORS_ORIGINS: '["http://localhost:8000"]'
+      CORS_ORIGINS: '["http://localhost:8002"]'
       COOKIE_SECURE: "false"
       DB_PATH: data/app.db
     ports:
@@ -14,7 +14,7 @@ services:
       # (revisão de segurança, 2026-07-30, ver comentário do bypass de login
       # em backend/app/api/deps.py). Se precisar acessar de outra máquina,
       # publique explicitamente em vez de reverter para "8000:8000".
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8002:8000"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
