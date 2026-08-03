@@ -21,6 +21,8 @@ class ConsentPayload(BaseModel):
     accepted: bool = True
 
 
+from app.db import lgpd as lgpd_db
+
 @router.post("/consent")
 def record_consent(
     payload: ConsentPayload,
@@ -40,6 +42,16 @@ def record_consent(
 
     consent_raw = f"{current_user}|{client_ip}|{user_agent}|{payload.term_version}|{timestamp}"
     consent_hash = hashlib.sha256(consent_raw.encode("utf-8")).hexdigest()
+
+    # Gravação Imutável no Banco de Dados
+    lgpd_db.save_consent(
+        user_email=current_user,
+        term_version=payload.term_version,
+        client_ip=client_ip,
+        user_agent=user_agent,
+        consent_hash=consent_hash,
+        timestamp_utc=timestamp
+    )
 
     return {
         "user_email": current_user,

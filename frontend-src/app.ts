@@ -24,6 +24,7 @@ let selectedPoint: LatLngLike | null = null;
 let currentTab = 'tab-analise';
 let pcaChartInstance: any = null;
 let metricsChartInstance: any = null;
+let deferredPrompt: any = null;
 
 // Última Matriz SSE carregada (GET /api/sse/matrix) — guardada em memória só
 // para alimentar as exportações .xlsx (exportSseMatrixToExcel/
@@ -264,31 +265,9 @@ function downloadSynthesis(): void {
   showToast('Síntese exportada em JSON.', 'success');
 }
 
-// Estado do Tour do Avatar
-type AvatarKey = 'maria_julia' | 'pedro';
-interface TourStep {
-  title: string;
-  text: string;
-}
-let selectedAvatar: AvatarKey = 'maria_julia';
-let currentTourStep = 0;
-const tourSteps: Record<AvatarKey, TourStep[]> = {
-  maria_julia: [
-    { title: "Boas-vindas da Maria Júlia! 🌿", text: "Olá! Sou a Maria Júlia, sua especialista em Ciências Ambientais. Vou te orientar no cálculo e interpretação das métricas de paisagem do MapBiomas!" },
-    { title: "Área de Interesse 🗺️", text: "Na primeira seção, escolha um ponto de interesse com raio de buffer ou selecione os limites oficiais de um município do IBGE." },
-    { title: "Cálculo de Métricas 📊", text: "Clique no botão 'Calcular Métricas' para obter dados de área, número de manchas (NP), densidade de bordas (ED) e diversidade de Shannon (SHDI)." },
-    { title: "Agrupamento SSE & Clustering 🤖", text: "Na aba 'Matriz Socioecológica', você pode agrupar municípios por perfil usando os algoritmos K-Means e DBSCAN!" }
-  ],
-  pedro: [
-    { title: "Boas-vindas do Pedro! 🛰️", text: "E aí! Sou o Pedro, engenheiro de dados geoespaciais. Vou te mostrar como processar rasters GeoTIFF e modelos de Machine Learning!" },
-    { title: "GeoTIFF & MapBiomas 🛰️", text: "Você pode usar dados diretos do MapBiomas via Earth Engine ou fazer upload dos seus próprios arquivos GeoTIFF de qualquer resolução." },
-    { title: "Agrupamento K-Means & DBSCAN 🤖", text: "Execute agrupamentos não supervisionados, analise o Método do Cotovelo (Elbow) e visualize a projeção 2D via PCA dos clusters!" },
-    { title: "Estarei no Canto da Tela 📌", text: "Ficarei flutuando aqui no canto da tela. Sempre que precisar de uma dica técnica, basta me dar um toque!" }
-  ]
-};
+
 
 // Registro de PWA Service Worker e Prompt de Instalação
-let deferredPrompt: BeforeInstallPromptEvent | null = null;
 window.addEventListener('beforeinstallprompt', (e: Event) => {
   e.preventDefault();
   deferredPrompt = e as BeforeInstallPromptEvent;
@@ -470,6 +449,7 @@ function toggleAuthMode(): void {
   const isRegister = authMode === 'register';
   $('auth-modal-title').innerText = isRegister ? 'Criar Nova Conta 📝' : 'Acesso Restrito - Identifique-se 🔑';
   $('confirm-password-group').style.display = isRegister ? 'block' : 'none';
+  if ($('lgpd-consent-group')) $('lgpd-consent-group').style.display = isRegister ? 'flex' : 'none';
   $('btn-auth-submit').innerText = isRegister ? 'Cadastrar' : 'Entrar';
   $('auth-toggle-msg').innerText = isRegister ? 'Já possui uma conta?' : 'Não tem uma conta?';
   $('btn-toggle-auth').innerText = isRegister ? 'Fazer Login' : 'Cadastrar-se';
@@ -490,6 +470,15 @@ async function handleAuthSubmit(event: Event): Promise<void> {
     errorMsg.style.display = 'block';
     return;
   }
+  
+  if (authMode === 'register') {
+    const lgpdConsent = $<HTMLInputElement>('auth-lgpd-consent');
+    if (lgpdConsent && !lgpdConsent.checked) {
+        errorMsg.innerText = 'É necessário aceitar os Termos de Uso e Política de Privacidade.';
+        errorMsg.style.display = 'block';
+        return;
+    }
+  }
 
   const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
   try {
@@ -505,6 +494,23 @@ async function handleAuthSubmit(event: Event): Promise<void> {
 
     accessToken = data.access_token;
     localStorage.setItem('user_email', email);
+    
+    // LGPD: Registrar o consentimento no backend
+    if (authMode === 'register') {
+        try {
+            await fetch('/api/lgpd/consent', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${accessToken}`
+                },
+                body: JSON.stringify({ term_version: 'v1.0', accepted: true })
+            });
+        } catch (e) {
+            console.error('Falha ao gravar trilha LGPD', e);
+        }
+    }
+
     checkAuthSession();
   } catch (err: any) {
     errorMsg.innerText = err.message;
@@ -888,12 +894,22 @@ function renderMetricsResult(data: any): void {
   const lm = data.landscape_metrics || {};
   const fmt = (v: unknown) => (typeof v === 'number' ? v.toFixed(2) : '—');
 
+  let climateHtml = '';
+  if (data.climate_data) {
+    if (data.climate_data.error) {
+      climateHtml = `<br><span style="color:#ef4444; font-size:0.9em;">⚠️ Precipitação: Indisponível (${data.climate_data.error})</span>`;
+    } else {
+      climateHtml = `<br><b>🌧️ Precipitação Pluviométrica Anual (${data.climate_data.year}):</b> ${data.climate_data.total_precipitation_mm.toFixed(2)} mm <i><small>(Fonte: ${data.climate_data.source})</small></i>`;
+    }
+  }
+
   $('landscape-metrics-summary').innerHTML = `
     <div style="background: rgba(16,185,129,0.1); border: 1px solid var(--accent-emerald); padding: 1rem; border-radius: 8px;">
       <b>${data.label}</b>${data.ano ? ` (${data.ano})` : ''}<br>
       <b>SHDI (Diversidade de Shannon):</b> ${fmt(lm.shannon_diversity_index)} •
       <b>Densidade de manchas (PD):</b> ${fmt(lm.patch_density)} •
       <b>Densidade de borda (ED):</b> ${fmt(lm.edge_density)} m/ha
+      ${climateHtml}
     </div>
   `;
 
@@ -1123,55 +1139,6 @@ function exportClusterToExcel(): void {
   showToast('Planilha exportada — abra no Excel para montar o gráfico.', 'success');
 }
 
-// Gestão de Avatares 3D e Onboarding
-function toggleSpeechBubble(): void {
-  const bubble = $('avatar-speech');
-  bubble.style.display = bubble.style.display === 'none' ? 'block' : 'none';
-}
-
-function openOnboardingModal(): void {
-  $('onboarding-modal').style.display = 'flex';
-  $('step-0-selection').style.display = 'flex';
-  $('step-tour-text').style.display = 'none';
-  $('btn-next-step').style.display = 'none';
-  currentTourStep = 0;
-}
-
-function closeOnboardingModal(): void {
-  $('onboarding-modal').style.display = 'none';
-}
-
-function selectAvatar(avatarKey: AvatarKey): void {
-  selectedAvatar = avatarKey;
-  currentTourStep = 0;
-
-  ($('avatar-widget-img') as HTMLImageElement).src = avatarKey === 'maria_julia' ? '/avatar_maria_julia.png' : '/avatar_pedro.png';
-  $('step-0-selection').style.display = 'none';
-  $('step-tour-text').style.display = 'block';
-  $('btn-next-step').style.display = 'inline-block';
-
-  renderTourStep();
-}
-
-function renderTourStep(): void {
-  const steps = tourSteps[selectedAvatar];
-  const step = steps[currentTourStep];
-
-  $('tour-step-title').innerText = step.title;
-  $('step-tour-text').innerText = step.text;
-  $('speech-text').innerText = step.text;
-}
-
-function nextTourStep(): void {
-  const steps = tourSteps[selectedAvatar];
-  currentTourStep++;
-  if (currentTourStep >= steps.length) {
-    closeOnboardingModal();
-    $('avatar-speech').style.display = 'block';
-  } else {
-    renderTourStep();
-  }
-}
 
 // Exportação e Exclusão LGPD (dados reais via /api/lgpd)
 async function exportUserData(): Promise<void> {
@@ -1463,3 +1430,176 @@ function renderMunicipioBatchResults(data: any): void {
     </tr>
   `).join('');
 }
+
+/* ==========================================================================
+   Intelligent Help System (Avatars & Onboarding)
+   ========================================================================== */
+
+let selectedAvatarId: string | null = null;
+let currentTourStep = 0;
+
+const AVATAR_PROFILES: any = {
+  'maria_julia': {
+    name: 'Maria Júlia',
+    img: '/avatar_maria_julia.png',
+    greetings: 'Olá! Sou a Maria Júlia. Vou te guiar na interpretação ecológica das nossas métricas!',
+    tips: {
+      'tab-analise': 'Aqui começamos! Defina sua área de estudo (ponto, município ou shapefile) e a fonte de dados (MapBiomas ou seu próprio GeoTIFF).',
+      'tab-sse': 'A Matriz Socioecológica (SSE) permite integrar fatores sociais e biofísicos. Muito útil para planejamento regional!',
+      'tab-markov': 'As Cadeias de Markov nos ajudam a prever cenários futuros de uso do solo com base no histórico recente.',
+      'tab-municipio-batch': 'Quer analisar o estado todo? Envie o shapefile dos municípios e nós rodamos a paisagem em lote!',
+      'tab-sintese': 'Pronto para o relatório final? Exporte suas métricas para um mapa visual ou PDF amigável.'
+    }
+  },
+  'pedro': {
+    name: 'Pedro',
+    img: '/avatar_pedro.png',
+    greetings: 'E aí! Sou o Pedro. Vou focar na arquitetura de dados e otimização das suas análises espaciais.',
+    tips: {
+      'tab-analise': 'Selecione o ROI e a Fonte de Dados. Se for usar o MapBiomas, certifique-se de que sua credencial JSON do Earth Engine está vinculada.',
+      'tab-sse': 'Esta matriz agrupa os dados de saída do pipeline. Use o K-Means e DBSCAN para clusterização avançada.',
+      'tab-markov': 'Matriz de Transição e predição estocástica via Cadeias de Markov. O gráfico gerado cruza dados históricos com os anos alvo.',
+      'tab-municipio-batch': 'Processamento massivo em lote. Insira o SHP com a malha municipal e o GeoTIFF cobrindo a região. O worker cuida do resto.',
+      'tab-sintese': 'Os DataFrames gerados estão prontos para exportação. Clique nos botões para baixar os arquivos vetoriais ou raster.'
+    }
+  }
+};
+
+const TOUR_STEPS = [
+  { title: 'Bem-vindo ao LandscapeMetrics! 🌍', text: 'Eu serei o seu guia.' },
+  { title: 'Passo 1: Área de Interesse 📍', text: 'Tudo começa na aba "Análise". Você pode clicar no mapa para definir um ponto, escolher um município ou subir um arquivo Shapefile (.zip).' },
+  { title: 'Passo 2: Fonte de Dados 🛰️', text: 'Você pode extrair dados diretamente do MapBiomas (usando o Google Earth Engine) ou subir seu próprio mapa raster (GeoTIFF).' },
+  { title: 'Pronto para explorar! 🚀', text: 'Sempre que tiver dúvidas, clique em mim aqui no canto inferior direito!' }
+];
+
+function initHelpSystem(): void {
+  const saved = localStorage.getItem('avatar_id');
+  if (saved && AVATAR_PROFILES[saved]) {
+    setAvatar(saved);
+  } else {
+    // Primeira vez do usuário
+    openOnboardingModal();
+  }
+}
+
+function openOnboardingModal(): void {
+  const modal = $('onboarding-modal');
+  if (modal) {
+    modal.style.display = 'flex';
+    $('step-0-selection').style.display = 'flex';
+    $('step-tour-text').style.display = 'none';
+    $('btn-next-step').style.display = 'none';
+    $('tour-step-title').innerText = 'Escolha seu Guia Virtual 🤖';
+    currentTourStep = 0;
+  }
+}
+
+function closeOnboardingModal(): void {
+  const modal = $('onboarding-modal');
+  if (modal) modal.style.display = 'none';
+  if (!selectedAvatarId) {
+    // Fallback padrão se fechar sem escolher
+    setAvatar('maria_julia');
+  }
+}
+
+function selectAvatar(id: string): void {
+  setAvatar(id);
+  
+  // Transition to Tour
+  $('step-0-selection').style.display = 'none';
+  const textContainer = $('step-tour-text');
+  textContainer.style.display = 'block';
+  $('btn-next-step').style.display = 'inline-block';
+  
+  showTourStep();
+}
+
+function setAvatar(id: string): void {
+  selectedAvatarId = id;
+  localStorage.setItem('avatar_id', id);
+  const widgetImg = $<HTMLImageElement>('avatar-widget-img');
+  if (widgetImg) {
+    widgetImg.src = AVATAR_PROFILES[id].img;
+    widgetImg.alt = AVATAR_PROFILES[id].name;
+  }
+}
+
+function showTourStep(): void {
+  if (currentTourStep < TOUR_STEPS.length) {
+    const step = TOUR_STEPS[currentTourStep];
+    $('tour-step-title').innerText = step.title;
+    let txt = step.text;
+    if (currentTourStep === 0 && selectedAvatarId) {
+      txt = AVATAR_PROFILES[selectedAvatarId].greetings + '<br><br>' + txt;
+    }
+    $('step-tour-text').innerHTML = txt;
+  } else {
+    closeOnboardingModal();
+  }
+}
+
+function nextTourStep(): void {
+  currentTourStep++;
+  showTourStep();
+}
+
+function toggleSpeechBubble(): void {
+  const bubble = $('avatar-speech');
+  if (!bubble || !selectedAvatarId) return;
+  
+  if (bubble.style.display === 'none' || bubble.style.display === '') {
+    const tip = AVATAR_PROFILES[selectedAvatarId].tips[currentTab] || 'Em que posso ajudar?';
+    $('speech-text').innerText = tip;
+    bubble.style.display = 'block';
+    // Auto-hide após 8 segundos
+    setTimeout(() => {
+      bubble.style.display = 'none';
+    }, 8000);
+  } else {
+    bubble.style.display = 'none';
+  }
+}
+
+// Inicializa o Help System no load
+window.addEventListener('DOMContentLoaded', () => {
+  setTimeout(initHelpSystem, 1000);
+});
+
+/* ==========================================================================
+   PWA - Service Worker & Install Prompt
+   ========================================================================== */
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').then(reg => {
+      console.log('Service Worker registrado com sucesso:', reg.scope);
+    }).catch(err => {
+      console.error('Falha ao registrar o Service Worker:', err);
+    });
+  });
+}
+
+window.addEventListener('beforeinstallprompt', (e: Event) => {
+  e.preventDefault();
+  deferredPrompt = e as any;
+  const installBtn = document.getElementById('pwa-install-btn');
+  if (installBtn) {
+    installBtn.style.display = 'flex';
+    installBtn.addEventListener('click', async () => {
+      installBtn.style.display = 'none';
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        const outcome = await deferredPrompt.userChoice;
+        console.log(`Instalação PWA: ${outcome.outcome}`);
+        deferredPrompt = null;
+      }
+    });
+  }
+});
+
+window.addEventListener('appinstalled', () => {
+  console.log('PWA instalado com sucesso!');
+  const installBtn = document.getElementById('pwa-install-btn');
+  if (installBtn) installBtn.style.display = 'none';
+});

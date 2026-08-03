@@ -56,6 +56,8 @@ app.add_middleware(
 # o JWT + refresh token de app/core/security.py.
 app.add_middleware(SessionMiddleware, secret_key=settings.jwt_secret_key)
 
+from app.core.autonomous_security import AutonomousSecurityGuard
+app.add_middleware(AutonomousSecurityGuard, max_req_per_min=100)
 
 @app.on_event("startup")
 def on_startup() -> None:

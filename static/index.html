@@ -13,7 +13,7 @@
   <!-- Google Fonts & Leaflet CSS -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
   <!-- Estilos da Aplicação -->
@@ -59,7 +59,7 @@
     <!-- Menu Lateral -->
     <aside class="sidebar" aria-label="Navegação principal">
       <button class="tab-btn active" data-tab="tab-analise" onclick="switchTab(event, 'tab-analise')">
-        <span class="tab-btn-icon">📍</span> Análise de Paisagem
+        <span class="tab-btn-icon">📍</span> Extração de Métricas Ecológicas
       </button>
       <button class="tab-btn" id="nav-tab-sse" data-tab="tab-sse" onclick="switchTab(event, 'tab-sse')">
         <span class="tab-btn-icon">🧬</span> Matriz Socioecológica & Clustering
@@ -68,7 +68,7 @@
         <span class="tab-btn-icon">📜</span> Privacidade & LGPD
       </button>
       <button class="tab-btn" id="nav-tab-markov" data-tab="tab-markov" onclick="switchTab(event, 'tab-markov')">
-        <span class="tab-btn-icon">🔮</span> Predição (Markov)
+        <span class="tab-btn-icon">🔮</span> Projeção Estocástica (Markov)
       </button>
       <button class="tab-btn" id="nav-tab-municipio-batch" data-tab="tab-municipio-batch" onclick="switchTab(event, 'tab-municipio-batch')">
         <span class="tab-btn-icon">📦</span> Lote por Município
@@ -91,10 +91,10 @@
         <p>Siga as 5 etapas: área & contexto, fonte de dados, métricas, análise avançada e síntese final. As etapas 4 e 5 liberam depois que a primeira análise for calculada.</p>
       </div>
       <div class="hero-steps" id="global-wizard">
-        <div class="step-pill" id="wizard-step-1" onclick="goToWizardStep(1)"><span>1</span> Área & Contexto</div>
-        <div class="step-pill" id="wizard-step-2" onclick="goToWizardStep(2)"><span>2</span> Fonte de Dados</div>
-        <div class="step-pill" id="wizard-step-3" onclick="goToWizardStep(3)"><span>3</span> Métricas</div>
-        <div class="step-pill locked" id="wizard-step-4" onclick="goToWizardStep(4)"><span>4</span> Análise Avançada</div>
+        <div class="step-pill" id="wizard-step-1" onclick="goToWizardStep(1)"><span>1</span> Amostra Espacial</div>
+        <div class="step-pill" id="wizard-step-2" onclick="goToWizardStep(2)"><span>2</span> Sensoriamento Remoto</div>
+        <div class="step-pill" id="wizard-step-3" onclick="goToWizardStep(3)"><span>3</span> Processamento</div>
+        <div class="step-pill locked" id="wizard-step-4" onclick="goToWizardStep(4)"><span>4</span> Padrões Multivariados</div>
         <div class="step-pill locked" id="wizard-step-5" onclick="goToWizardStep(5)"><span>5</span> Síntese & Exportação</div>
       </div>
     </section>
@@ -117,8 +117,8 @@
               <div class="step-header">
                 <span class="step-number" id="step-1-number">1</span>
                 <div>
-                  <div class="step-title">Área de interesse</div>
-                  <div class="step-status" id="step-1-status">Dado inicial obrigatório — defina um ponto ou município.</div>
+                  <div class="step-title">Definição da Amostra Espacial</div>
+                  <div class="step-status" id="step-1-status">Dado obrigatório — defina o polígono ou ponto de amostragem.</div>
                 </div>
               </div>
               <div class="step-body">
@@ -173,8 +173,8 @@
               <div class="step-header">
                 <span class="step-number" id="step-2-number">2</span>
                 <div>
-                  <div class="step-title">Fonte de dados & parametrização</div>
-                  <div class="step-status" id="step-2-status">Escolha a origem da cobertura do solo e configure o que ela exige.</div>
+                  <div class="step-title">Fonte de Dados (Sensoriamento Remoto)</div>
+                  <div class="step-status" id="step-2-status">Defina a origem do raster de cobertura do solo (ex: GeoTIFF, MapBiomas).</div>
                 </div>
               </div>
               <div class="step-body">
@@ -212,7 +212,7 @@
               <div class="step-header">
                 <span class="step-number" id="step-3-number">3</span>
                 <div>
-                  <div class="step-title">Calcular</div>
+                  <div class="step-title">Processamento de Padrões Espaciais</div>
                   <div class="step-status" id="step-3-status">Disponível assim que os passos 1 e 2 estiverem completos.</div>
                 </div>
               </div>
@@ -250,19 +250,19 @@
             </div>
 
             <details class="chart-help" style="margin-top: 1.25rem;">
-              <summary>ℹ️ Como interpretar estes resultados</summary>
+              <summary>ℹ️ Como interpretar as métricas de paisagem</summary>
               <div class="chart-help-body">
-                <p><b>Gráfico de barras</b>: proporção (%) da paisagem ocupada por cada classe de cobertura do solo — quanto maior a barra, mais dominante aquela classe na área analisada.</p>
-                <p><b>Tabela por classe</b>: <code>% Paisagem</code> é a mesma proporção do gráfico; <code>NP</code> é o número de manchas (fragmentos) daquela classe — mais manchas geralmente indica maior fragmentação; <code>ED</code> é a densidade de borda (metros de perímetro por hectare) — quanto maior, mais recortada/irregular é a forma das manchas.</p>
-                <p><b>Cards no topo</b>: <code>SHDI</code> (Diversidade de Shannon) mede quão heterogênea é a paisagem entre classes — perto de 0 significa que uma classe domina quase tudo, valores maiores indicam uma mistura mais equilibrada. <code>Densidade de manchas</code> e <code>Densidade de borda</code> são as mesmas ideias acima, mas em nível de paisagem inteira (todas as classes juntas), não por classe.</p>
+                <p><b>Gráfico de Barras (% Paisagem)</b>: Mostra a abundância relativa de cada classe. Útil para identificar classes matrizes dominantes.</p>
+                <p><b>Tabela (Métricas do FRAGSTATS)</b>: <code>NP (Number of Patches)</code> é o número de manchas — valores altos indicam descontinuidade/fragmentação; <code>ED (Edge Density)</code> é a densidade de borda (m/ha) — valores altos indicam formas mais recortadas, efeito de borda e intrusão antrópica.</p>
+                <p><b>Cards Resumo</b>: <code>SHDI (Shannon's Diversity Index)</code> mede a heterogeneidade composicional (perto de 0 = paisagem homogênea; valores altos = alta mistura de classes); Densidade de manchas e borda em nível de paisagem sumarizam a complexidade geral do polígono amostrado.</p>
               </div>
             </details>
 
             <div id="next-steps-panel" style="display: none; margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color);">
-              <div style="font-weight: 600; margin-bottom: 0.75rem;">Etapa 4 — escolha uma análise avançada (opcional):</div>
+              <div style="font-weight: 600; margin-bottom: 0.75rem;">Etapa 4 — escolha uma análise de padrões (opcional):</div>
               <div style="display: flex; flex-wrap: wrap; gap: 0.75rem;">
-                <button class="btn-outline" onclick="goToAdvancedStep('tab-markov')">🔮 Tendência temporal (Markov)</button>
-                <button class="btn-outline" onclick="goToAdvancedStep('tab-sse')">🧬 Agrupar com histórico (SSE)</button>
+                <button class="btn-outline" onclick="goToAdvancedStep('tab-markov')">🔮 Projeção estocástica (Markov)</button>
+                <button class="btn-outline" onclick="goToAdvancedStep('tab-sse')">🧬 Agrupamento multivariado (SSE)</button>
                 <button class="btn-outline" onclick="goToAdvancedStep('tab-municipio-batch')">📦 Processar em lote</button>
                 <button class="btn-primary" onclick="goToAdvancedStep('tab-sintese')">🏁 Ir para síntese & exportação</button>
               </div>
@@ -275,7 +275,7 @@
     <!-- ABA 2: Matriz Socioecológica & Clustering -->
     <section id="tab-sse" class="tab-content" style="display: none;">
       <div class="glass-card" style="margin-bottom: 1.5rem;">
-        <div class="card-title">🧬 Matriz Socioecológica (SSE) & Escritório Virtual</div>
+        <div class="card-title">🧬 Matriz Socioecológica (SSE) Multivariada</div>
         <p style="color: var(--text-secondary); font-size: 0.9rem;">
           Consolida suas análises salvas numa matriz multivariada de paisagens, integrando métricas do FRAGSTATS e dados populacionais do IBGE.
         </p>
@@ -330,10 +330,10 @@
             <button id="btn-export-cluster-excel" class="btn-outline" style="margin-top: 0.75rem; display: none;" onclick="exportClusterToExcel()">📥 Exportar agrupamento para Excel (.xlsx)</button>
 
             <details class="chart-help" style="margin-top: 0.75rem;">
-              <summary>ℹ️ Como interpretar este gráfico</summary>
+              <summary>ℹ️ Como interpretar o espaço de similaridade</summary>
               <div class="chart-help-body">
-                <p>Cada ponto é UMA das suas análises salvas, projetada de dezenas de variáveis (proporção de classes + métricas de paisagem) para só 2 eixos (PCA 1 e PCA 2) — análises com composição de paisagem parecida ficam próximas no gráfico.</p>
-                <p><b>Cor</b> = cluster atribuído pelo algoritmo. No <b>K-Means</b>, todo ponto pertence a um dos K grupos definidos; o <b>Silhouette Score</b> (perto de 1 = clusters bem separados, perto de 0 = sobrepostos) indica a qualidade do agrupamento. No <b>DBSCAN</b>, pontos marcados como <b>Outlier</b> (vermelho) não se encaixaram em nenhuma região densa — não é erro, é uma análise atípica em relação às demais.</p>
+                <p>O gráfico utiliza <b>PCA (Análise de Componentes Principais)</b> para reduzir dezenas de métricas espaciais e socioeconômicas a apenas 2 eixos sintéticos. Pontos próximos representam amostras com "assinaturas de paisagem" ecológicas muito similares.</p>
+                <p>A cor define o cluster (tipologia). No <b>K-Means</b>, o <b>Silhouette Score</b> mede a coerência matemática dos grupos (próximo a 1 = clusters densos e bem separados). No <b>DBSCAN</b>, os <b>Outliers</b> (vermelhos) são anomalias estatísticas, ou seja, paisagens cujos padrões diferem radicalmente das vizinhanças detectadas.</p>
               </div>
             </details>
           </div>
@@ -344,7 +344,7 @@
     <!-- ABA: Predição (Markov) -->
     <section id="tab-markov" class="tab-content" style="display: none;">
       <div class="glass-card">
-        <div class="card-title">🔮 Predição de Anos Futuros (Cadeias de Markov)</div>
+        <div class="card-title">🔮 Projeção Estocástica (Cadeias de Markov)</div>
         <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem;">
           Construa uma matriz de transição a partir de múltiplos GeoTIFFs (de anos diferentes) e projete a distribuição das classes de cobertura do solo para o futuro.
         </p>
@@ -425,11 +425,11 @@
           </div>
 
           <details class="chart-help" style="margin-top: 1.25rem;" open>
-            <summary>ℹ️ Como interpretar esta predição</summary>
+            <summary>ℹ️ Fundamentos da Cadeia de Markov</summary>
             <div class="chart-help-body">
-              <p><b>Linha sólida</b> = histórico observado, extraído dos GeoTIFFs enviados. <b>Linha tracejada</b> = projeção calculada a partir da matriz de transição — ancorada no último ano observado, para não gerar um salto visual entre o dado real e a projeção.</p>
-              <p><b>Matriz de transição</b> acima: cada célula é a probabilidade (0 a 1) de um pixel da classe da <b>linha</b> virar a classe da <b>coluna</b> no próximo intervalo — a diagonal mostra o quanto cada classe tende a permanecer estável.</p>
-              <p>⚠️ Método <b>não-espacial</b> (projeta só a proporção agregada de cada classe, não gera um mapa futuro) e assume que as probabilidades de transição observadas no histórico continuam constantes (estacionariedade) — trate como uma tendência, não como uma previsão exata.</p>
+              <p>O modelo projeta estados futuros com base em matrizes de probabilidade de transição (estocástico discreto). A <b>linha contínua</b> ilustra o histórico extraído dos GeoTIFFs, enquanto a <b>tracejada</b> demonstra a simulação preditiva ancorada no último ponto.</p>
+              <p>A <b>Matriz de Transição</b> quantifica a probabilidade condicional de uma célula mudar do estado atual (linha) para outro estado (coluna) no intervalo de tempo observado. Valores altos na diagonal denotam inércia/persistência da classe de cobertura do solo.</p>
+              <p>⚠️ <b>Limitações:</b> Este é um modelo <i>não-espacializado</i> de Markov puro de 1ª ordem (sem Autômatos Celulares). Assume estacionariedade nos determinantes de mudança de uso do solo, projetando apenas a proporção agregada da paisagem.</p>
             </div>
           </details>
         </div>
@@ -439,7 +439,7 @@
     <!-- ABA: Lote por Município (shapefile + 1 GeoTIFF) -->
     <section id="tab-municipio-batch" class="tab-content" style="display: none;">
       <div class="glass-card">
-        <div class="card-title">📦 Métricas por Município em Lote</div>
+        <div class="card-title">📦 Extração em Lote (Batch Processing)</div>
         <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem;">
           Envie o shapefile de municípios (ex.: malha do IBGE de uma UF) e um único GeoTIFF de cobertura do solo — calcula as métricas de fragmentação de TODOS os municípios do shapefile contra o mesmo raster.
         </p>
@@ -621,6 +621,13 @@
         <div id="confirm-password-group" class="form-group" style="text-align: left; display: none;">
           <label>Confirmar Senha:</label>
           <input type="password" id="auth-password-confirm" placeholder="••••••••">
+        </div>
+
+        <div id="lgpd-consent-group" class="form-group" style="text-align: left; display: none; margin-top: 1rem; align-items: flex-start; gap: 0.5rem;">
+          <input type="checkbox" id="auth-lgpd-consent" style="margin-top: 0.3rem;">
+          <label for="auth-lgpd-consent" style="font-size: 0.8rem; line-height: 1.3;">
+            Li e aceito os <a href="#" style="color: var(--accent-cyan);">Termos de Uso</a> e autorizo o tratamento de meus dados conforme a <a href="#" style="color: var(--accent-cyan);">Política de Privacidade (LGPD)</a>.
+          </label>
         </div>
 
         <div id="auth-error-msg" style="color: #ef4444; font-size: 0.85rem; margin-bottom: 1rem; display: none;"></div>

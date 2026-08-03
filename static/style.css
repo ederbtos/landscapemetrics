@@ -55,13 +55,22 @@ body.high-contrast .step-pill span {
   padding: 0;
 }
 
+@keyframes fadeUp {
+  0% { opacity: 0; transform: translateY(20px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
 body {
   font-family: var(--font-main);
-  background: var(--bg-primary);
+  background: radial-gradient(circle at top left, rgba(16, 185, 129, 0.1), transparent 30%), var(--bg-primary);
   color: var(--text-primary);
   min-height: 100vh;
   line-height: 1.6;
   overflow-x: hidden;
+}
+
+.tab-content {
+  animation: fadeUp 0.6s ease-out forwards;
 }
 
 /* Header & Navbar */
@@ -237,6 +246,9 @@ header {
   border-radius: 20px;
   padding: 1.4rem 1.6rem;
   margin-bottom: 1.25rem;
+  backdrop-filter: blur(24px);
+  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.25);
+  animation: fadeUp 0.5s ease-out forwards;
 }
 
 .hero-copy h2 {
@@ -730,4 +742,55 @@ button:focus-visible, a:focus-visible {
   justify-content: space-between;
   align-items: center;
   font-size: 0.9rem;
+}
+
+/* Avatar Flutuante e Ajuda (Widget) */
+.avatar-widget {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.speech-bubble {
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid var(--accent-blue);
+  color: #fff;
+  padding: 1rem 1.25rem;
+  border-radius: 12px 12px 0 12px;
+  max-width: 250px;
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+  box-shadow: var(--shadow-lg);
+  animation: fadeIn 0.3s ease;
+  position: relative;
+}
+
+.speech-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -10px;
+  right: 10px;
+  border-width: 10px 10px 0 0;
+  border-style: solid;
+  border-color: var(--accent-blue) transparent transparent transparent;
+}
+
+.avatar-img-btn {
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 3px solid var(--accent-blue);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+  transition: transform 0.2s, box-shadow 0.2s;
+  background-color: var(--bg-secondary);
+}
+
+.avatar-img-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
 }

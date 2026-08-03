@@ -101,6 +101,28 @@ async def calculate_metrics(
         municipio_uf=municipio_uf,
         ano=result["ano"],
     )
+    
+    # Busca Precipitação Pluviométrica via Google Earth Engine (CHIRPS)
+    climate_data = None
+    from app.services.climate import get_precipitation_stats
+    # Extrai latitude e longitude (seja de um ponto ou do centróide do município)
+    clima_lon, clima_lat = None, None
+    if result["point_lonlat"]:
+        clima_lon, clima_lat = result["point_lonlat"]
+    elif municipio_codigo:
+        # Pega do banco
+        from app.db.municipios import get_municipio
+        mun_data = get_municipio(municipio_codigo)
+        if mun_data:
+            clima_lon, clima_lat = mun_data["lon"], mun_data["lat"]
+            
+    if clima_lon is not None and clima_lat is not None:
+        climate_data = get_precipitation_stats(
+            lon=clima_lon, 
+            lat=clima_lat, 
+            buffer_dist=buffer_dist if buffer_dist else 5000, 
+            year=result["ano"]
+        )
 
     return landscape_core.sanitize_for_json({
         "label": result["label"],
@@ -108,6 +130,7 @@ async def calculate_metrics(
         "ano": result["ano"],
         "class_metrics": class_metrics_df.to_dict(orient="index"),
         "landscape_metrics": result["landscape_metrics"],
+        "climate_data": climate_data,
         # Envelope do pipeline (wizard do frontend, ver frontend-src/app.ts) —
         # aditivo, não remove nenhum campo consumido antes desta mudança.
         "step": "metrics_calculated",

@@ -124,6 +124,21 @@ def init_db() -> None:
             )
             """
         )
+        
+        # LGPD: Trilha de auditoria para o Consentimento (Termos de Uso)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lgpd_consents (
+                user_email TEXT NOT NULL,
+                term_version TEXT NOT NULL,
+                client_ip TEXT NOT NULL,
+                user_agent TEXT NOT NULL,
+                consent_hash TEXT NOT NULL,
+                timestamp_utc TEXT NOT NULL,
+                PRIMARY KEY (user_email, term_version)
+            )
+            """
+        )
         conn.commit()
 
     # Dados de referência nacionais (malha municipal/MapBiomas/PRODES/ANA) —
